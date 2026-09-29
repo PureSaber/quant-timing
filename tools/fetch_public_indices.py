@@ -2,7 +2,7 @@
 
 Most closes and volumes are the latest 2500 daily bars from Sina. CSI 300 value and
 growth closes, and the published peg field used as the valuation spread, come from
-the CSI index performance feed. IF0 is Sina's continuous main contract. The treasury
+the CSI index performance feed. Futures use cached individual quarterly contracts. The treasury
 ETF close is the cash/bond return. Twenty-day average volume is the industry crowding
 proxy. Earnings revisions are not in these feeds and are not invented.
 """
@@ -10,6 +10,7 @@ proxy. Earnings revisions are not in these feeds and are not invented.
 from __future__ import annotations
 
 import json
+import argparse
 import sys
 import time
 from pathlib import Path
@@ -29,6 +30,7 @@ from quant_timing.futures import (  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "data" / "public"
 BARS = 2500
+OFFLINE = False
 INDICES = {
     "hs300": "sh000300",
     "csi500": "sh000905",
@@ -108,35 +110,51 @@ def csi_perf(code: str) -> pd.DataFrame:
 
 
 def sina_contract(symbol: str) -> pd.Series:
+    cached = OUT / "contracts" / f"{symbol}.csv"
+    if cached.exists():
+        return pd.read_csv(cached, parse_dates=["date"]).set_index("date")["close"]
+    if OFFLINE:
+        return pd.Series(dtype=float)
     url = (
         "https://stock2.finance.sina.com.cn/futures/api/jsonp.php/"
         f"var%20_{symbol}=/InnerFuturesNewService.getDailyKLine?symbol={symbol}"
     )
-    try:
-        text = _get(url).decode("utf-8", errors="replace")
-        body = text[text.find("[") : text.rfind("]") + 1]
-        rows = json.loads(body) if body.startswith("[") else []
-    except Exception:
-        return pd.Series(dtype=float)
+    text = _get(url).decode("utf-8", errors="replace")
+    body = text[text.find("[") : text.rfind("]") + 1]
+    rows = json.loads(body) if body.startswith("[") else []
     if not rows:
         return pd.Series(dtype=float)
     series = pd.Series({row["d"]: float(row["c"]) for row in rows}, dtype=float)
     series.index = pd.to_datetime(series.index)
-    return series.sort_index()
+    series = series.sort_index()
+    cached.parent.mkdir(parents=True, exist_ok=True)
+    series.rename_axis("date").rename("close").to_csv(cached)
+    return series
 
 
-def _stitched(prefix: str, calendar: pd.DatetimeIndex) -> pd.Series:
+def _stitched(prefix: str, calendar: pd.DatetimeIndex, sessions: pd.DatetimeIndex) -> pd.Series:
     contracts = quarter_contracts(prefix, calendar.min(), calendar.max())
     prices: dict[str, pd.Series] = {}
     for symbol, _expiry in contracts:
         series = sina_contract(symbol)
         if not series.empty:
             prices[symbol] = series
-        time.sleep(0.12)
-    listed = [(symbol, expiry) for symbol, expiry in contracts if symbol in prices]
-    print(prefix, "contracts", len(listed))
-    schedule = dominant_schedule(calendar, listed)
+        if not OFFLINE:
+            time.sleep(0.12)
+    print(prefix, "contracts", len(prices), flush=True)
+    schedule = dominant_schedule(calendar, contracts, trading_sessions=sessions)
     return price_index_from_returns(stitch_returns(prices, schedule))
+
+
+def refresh_futures(calendar: pd.DatetimeIndex) -> None:
+    """Rebuild from cached individual contracts and the independently frozen calendar."""
+    sessions = pd.DatetimeIndex(
+        pd.read_csv(OUT / "trading_sessions.csv", parse_dates=["date"])["date"]
+    )
+    futures = pd.DataFrame(
+        {name: _stitched(name, calendar, sessions) for name in ("IF", "IC", "IM")}
+    )
+    _write(futures, OUT / "futures.csv")
 
 
 def _write(frame: pd.DataFrame, path: Path) -> None:
@@ -146,7 +164,21 @@ def _write(frame: pd.DataFrame, path: Path) -> None:
 
 
 def main() -> None:
+    global OFFLINE
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--futures-only", action="store_true")
+    parser.add_argument(
+        "--offline", action="store_true", help="Rebuild only from the committed contract snapshot"
+    )
+    args = parser.parse_args()
+    OFFLINE = args.offline
+    if OFFLINE and not args.futures_only:
+        parser.error("--offline requires --futures-only")
     OUT.mkdir(parents=True, exist_ok=True)
+    if args.futures_only:
+        dates = pd.DatetimeIndex(pd.read_csv(OUT / "indices.csv", parse_dates=["date"])["date"])
+        refresh_futures(dates)
+        return
     closes = {}
     volumes = {}
     for name, symbol in INDICES.items():
@@ -175,17 +207,15 @@ def main() -> None:
     )
     for name in ("bank", "broker", "pharma", "electronics"):
         signals[f"industry.{name}"] = volume[name].rolling(20).mean()
-    futures = pd.DataFrame({name: _stitched(name, prices.index) for name in ("IF", "IC", "IM")})
     signals = signals.dropna(subset=["value_growth", "hs300_peg"])
     common = prices.index.intersection(signals.index)
     prices = prices.loc[common]
     signals = signals.loc[common]
     volume = volume.reindex(common)
-    futures = futures.reindex(common)
     _write(prices, OUT / "indices.csv")
     _write(signals, OUT / "signals.csv")
     _write(volume, OUT / "amounts.csv")
-    _write(futures, OUT / "futures.csv")
+    refresh_futures(common)
     note = OUT / "SOURCE.md"
     note.write_text(
         "\n".join(
@@ -199,8 +229,8 @@ def main() -> None:
                 "series: each day's return uses the dominant quarterly contract's own previous",
                 "close, rolled five trading days before the third Friday. IM before listing falls",
                 "back to IF inside the study. `bond_etf` is SSE 511010 and is only a cash/bond",
-                "total-return proxy. `amounts.csv` is Sina volume, used as the activity unit for",
-                "impact and for the industry amount-share benchmark. That benchmark is not the",
+                "total-return proxy. `amounts.csv` is Sina volume, used only for the industry",
+                "volume-share benchmark. No monetary capacity is inferred. That benchmark is not the",
                 "official historical industry weight of the CSI 300.",
                 "",
                 "`signals.csv` column `value_growth` is CSI 300 Growth published `peg` minus",

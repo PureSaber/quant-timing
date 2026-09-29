@@ -57,11 +57,11 @@ flowchart LR
 真实指数对照：
 
 ```powershell
-python tools/fetch_public_indices.py
+python tools/fetch_public_indices.py --futures-only --offline
 python -m quant_timing compare --config configs/market_comparison.yaml --out studies/market_comparison
 ```
 
-这次公开样本分成三张表，数字在 `studies/market_comparison/model_comparison.csv`。只做沪深 300 仓位、现金加国债 ETF 时，三档规则和波动率目标的走步折平均超额接近 0，两条趋势规则为负。风格组合在同一仓位路径下仍落后于组内等权。期货覆盖改成按保证金出资、并用 IF、IC、IM 对冲对应袖套之后，单独套在沪深 300 上仍落后于不加期货的版本。这是一次对照，不是收益承诺。数据口径见 `data/public/SOURCE.md`。
+修正后的十二组公开对照保存在 `studies/market_comparison/model_comparison.csv`，所有模型统一从 2019-03-08 开始。期货序列可由已提交的单合约收盘价和独立交易日历离线重建，上市前及数据覆盖前不会生成价格。公开成交量只用于行业相对权重，不推算人民币容量；表中的容量及参与率保持空值。旧版对照数字已替换，完整数据口径见 `data/public/SOURCE.md`。这些固定参数下的研究结果不构成收益承诺。
 
 外部 regime 有两种读法，不能同时用：
 

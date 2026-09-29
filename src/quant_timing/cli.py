@@ -68,11 +68,18 @@ def _load_prices(raw: dict, config_path: Path):
     input_cfg = raw.get("input")
     if not isinstance(input_cfg, dict) or not isinstance(input_cfg.get("path"), str):
         raise ValueError("input.path is required")
-    return load_prices(
+    prices = load_prices(
         resolve_path(str(input_cfg["path"]), config_path),
         date_col=str(input_cfg.get("date_col", "date")),
         fmt=str(input_cfg.get("format", "wide")),
     )
+    if input_cfg.get("start"):
+        prices = prices.loc[str(input_cfg["start"]) :]
+    if input_cfg.get("end"):
+        prices = prices.loc[: str(input_cfg["end"])]
+    if prices.empty:
+        raise ValueError("input date range contains no prices")
+    return prices
 
 
 def _load_market(raw: dict, resolved: dict, config_path: Path) -> tuple:
@@ -98,7 +105,9 @@ def _load_market(raw: dict, resolved: dict, config_path: Path) -> tuple:
             resolve_path(resolved["regime"]["snapshot"], config_path)
         )
     if resolved["macro"]["context"]:
-        extras["macro"] = read_macro_context(resolve_path(resolved["macro"]["context"], config_path))
+        extras["macro"] = read_macro_context(
+            resolve_path(resolved["macro"]["context"], config_path)
+        )
     if resolved["macro"].get("history"):
         extras["macro_history"] = load_macro_history(
             resolve_path(resolved["macro"]["history"], config_path)
@@ -130,7 +139,9 @@ def _load_market(raw: dict, resolved: dict, config_path: Path) -> tuple:
     if resolved["overlay"]["mode"] == "futures":
         futures_path = (raw.get("futures") or {}).get("path")
         if futures_path:
-            extras["futures_prices"] = load_signal_panel(resolve_path(str(futures_path), config_path))
+            extras["futures_prices"] = load_signal_panel(
+                resolve_path(str(futures_path), config_path)
+            )
         else:
             columns = list(resolved["overlay"]["contracts"])
             missing = [column for column in columns if column not in prices.columns]

@@ -131,6 +131,8 @@ def _path(
         if column not in gross_parts.columns:
             continue
         idle = weights[column].shift(1).abs().fillna(0.0).le(1e-12)
+        if (gross_parts[column].isna() & ~idle).any():
+            raise ValueError(f"missing futures return while holding {column}")
         gross_parts.loc[idle, column] = gross_parts.loc[idle, column].fillna(0.0)
     gross = gross_parts.sum(axis=1, min_count=len(columns))
     traded = weights.diff().abs().sum(axis=1) / 2.0
@@ -151,7 +153,7 @@ def _impact(
     traded = turnover.clip(lower=0.0)
     if adv is None or capital is None:
         return impact_coef * traded.pow(1.5)
-    activity = adv.reindex(turnover.index).replace(0, pd.NA)
+    activity = adv.reindex(turnover.index).shift(1).replace(0, pd.NA)
     participation = traded * float(capital) / activity
     return impact_coef * traded * participation.clip(lower=0.0).pow(0.5)
 

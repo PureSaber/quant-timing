@@ -32,7 +32,10 @@ def test_tsmom_and_moving_average_ignore_future_prices() -> None:
     original = build_position(close, rules)
     revised = close.copy()
     revised.iloc[-1] = 1.0
-    assert build_position(revised, rules)["position_scale"].iloc[-2] == original["position_scale"].iloc[-2]
+    assert (
+        build_position(revised, rules)["position_scale"].iloc[-2]
+        == original["position_scale"].iloc[-2]
+    )
     trend = build_position(
         close,
         {"model": "moving_average", "fast_window": 3, "slow_window": 8, "floor": 0.0, "cap": 1.0},
@@ -135,10 +138,18 @@ def test_macro_history_does_not_use_a_later_release() -> None:
 def test_style_signals_and_active_deviation_cap() -> None:
     index = pd.to_datetime(["2024-01-02", "2024-01-03"])
     prices = pd.DataFrame(
-        {"small": [100.0, 100.0], "large": [100.0, 100.0], "bank": [10.0, 10.0], "pharma": [10.0, 11.0]},
+        {
+            "small": [100.0, 100.0],
+            "large": [100.0, 100.0],
+            "bank": [10.0, 10.0],
+            "pharma": [10.0, 11.0],
+        },
         index=index,
     )
-    signals = pd.DataFrame({"size": [pd.NA, 0.2], "industry.bank": [1.0, 1.0], "industry.pharma": [1.0, 3.0]}, index=index)
+    signals = pd.DataFrame(
+        {"size": [pd.NA, 0.2], "industry.bank": [1.0, 1.0], "industry.pharma": [1.0, 3.0]},
+        index=index,
+    )
     weights = style_internal_weights(
         prices,
         {
@@ -272,6 +283,17 @@ def test_adv_impact_uses_participation_and_reports_a_different_cost() -> None:
     adv = pd.Series(100.0, index=index)
     cost = simulate(weights, weights, prices, "market", 0.0, impact_coef=0.2, adv=adv, capital=50.0)
     assert cost["cost"].iloc[2] == pytest.approx(0.05)
+
+
+def test_impact_uses_decision_day_turnover_not_future_activity() -> None:
+    index = pd.bdate_range("2024-01-01", periods=3)
+    prices = pd.DataFrame({"market": 100.0}, index=index)
+    weights = pd.DataFrame({"market": [1.0, 0.5, 0.5], "CASH": [0.0, 0.5, 0.5]}, index=index)
+    adv = pd.Series([100.0, 100.0, 10000.0], index=index)
+    result = simulate(
+        weights, weights, prices, "market", 0.0, impact_coef=0.2, adv=adv, capital=50.0
+    )
+    assert result["cost"].iloc[2] == pytest.approx(0.05)
 
 
 def test_earnings_yield_cap_uses_only_past_valuations() -> None:

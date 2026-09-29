@@ -22,7 +22,9 @@ DEFAULT_HEDGE = {
 }
 
 
-def cash_returns_from_yield(index: pd.Index, annual_yield: pd.Series, daycount: int = 252) -> pd.Series:
+def cash_returns_from_yield(
+    index: pd.Index, annual_yield: pd.Series, daycount: int = 252
+) -> pd.Series:
     """Daily cash return from an annual yield published on or before that date.
 
     Dates before the first print earn zero. The series is not back-filled from the future.
@@ -52,13 +54,17 @@ def apply_futures_overlay(
     """
     if not 0.0 <= margin_rate < 1.0:
         raise ValueError("margin_rate must be in [0, 1)")
-    equity_columns = [column for column in weights.columns if column not in FUTURES_COLUMNS | {"CASH", "MARGIN"}]
+    equity_columns = [
+        column for column in weights.columns if column not in FUTURES_COLUMNS | {"CASH", "MARGIN"}
+    ]
     equity = weights[equity_columns].astype(float)
     total = equity.sum(axis=1)
     active = total.gt(1e-12)
     mix = equity.div(total.where(active), axis=0).fillna(0.0)
     contracts = ["IF", "IC", "IM"]
-    out = pd.DataFrame(0.0, index=weights.index, columns=[*equity_columns, *contracts, "CASH", "MARGIN"])
+    out = pd.DataFrame(
+        0.0, index=weights.index, columns=[*equity_columns, *contracts, "CASH", "MARGIN"]
+    )
     mapping = {**DEFAULT_HEDGE, **(hedge_map or {})}
     beta_frame = _betas(mix, betas)
     fallback_frame = _betas(mix, fallback_betas)
@@ -120,6 +126,8 @@ def _contract_exposure(
             continue
         contract = mapping.get(str(sleeve), "IF")
         if contract not in exposures or not bool(listed.get(contract, False)):
+            if not bool(listed.get("IF", False)):
+                raise ValueError(f"no available futures hedge for {sleeve}")
             exposures["IF"] += weight_value * float(fallback_beta.get(sleeve, 1.0))
             continue
         exposures[contract] += weight_value * float(beta.get(sleeve, 1.0))

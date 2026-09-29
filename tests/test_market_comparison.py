@@ -29,6 +29,7 @@ def test_public_snapshot_covers_the_named_sleeves() -> None:
     assert len(prices) > 1500
     futures = pd.read_csv(root / "data" / "public" / "futures.csv")
     assert {"IF", "IC", "IM"} <= set(futures.columns)
+    assert futures.loc[futures["date"] < "2022-07-22", "IM"].isna().all()
 
 
 def test_market_comparison_completes_out_of_sample(tmp_path) -> None:
@@ -51,3 +52,18 @@ def test_market_comparison_completes_out_of_sample(tmp_path) -> None:
     assert table["mean_excess_return"].notna().all()
     assert table["full_sample_drawdown"].notna().all()
     assert table["mean_turnover"].notna().all()
+    assert table["capacity"].isna().all()
+    assert table["median_participation"].isna().all()
+    assert set(table["sample_start"]) == {"2019-03-08"}
+
+
+def test_volume_cannot_be_used_with_monetary_capital():
+    import pytest
+    from quant_timing.config import load_yaml, resolve_config
+
+    root = Path(__file__).resolve().parents[1]
+    raw = load_yaml(root / "configs" / "market_comparison.yaml")
+    raw["position"] = {"model": "rules", **raw["models"]["rules"]}
+    raw["costs"]["capital"] = 100000000
+    with pytest.raises(ValueError, match="activity.unit: CNY"):
+        resolve_config(raw)

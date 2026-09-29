@@ -4,12 +4,12 @@ input:
   path: ../data/public/indices.csv
   format: wide
   date_col: date
+  start: "2019-03-08"
 signals:
   path: ../data/public/signals.csv
 costs:
   bps: 5
   impact_coef: 0.1
-  capital: 100000000
 cash:
   mode: price
   yield_column: bond_etf
@@ -17,6 +17,7 @@ futures:
   path: ../data/public/futures.csv
 activity:
   path: ../data/public/amounts.csv
+  unit: volume
 overlay:
   mode: futures
   contracts: [IF, IC, IM]

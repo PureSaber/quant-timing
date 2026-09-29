@@ -110,8 +110,14 @@ def run_study(
             fallback_betas=fallback,
             available=available,
         )
-        extra_returns = {name: futures[name].pct_change().fillna(0.0) for name in futures.columns}
-    adv = _book_activity(amounts, weights) if amounts is not None else None
+        extra_returns = {
+            name: futures[name].pct_change(fill_method=None) for name in futures.columns
+        }
+    adv = (
+        _book_activity(amounts, weights)
+        if amounts is not None and config["activity_unit"] == "CNY"
+        else None
+    )
     realized = simulate(
         weights,
         matched,
@@ -231,7 +237,9 @@ def _latest(
     return latest
 
 
-def _summary(folds: pd.DataFrame, realized: pd.DataFrame, leakage: dict[str, Any]) -> dict[str, Any]:
+def _summary(
+    folds: pd.DataFrame, realized: pd.DataFrame, leakage: dict[str, Any]
+) -> dict[str, Any]:
     scored = 0 if folds.empty else int((folds["n_decisions"] > 0).sum())
     sample = realized.dropna(subset=["net_return"])
     if leakage["reason"] == "not_run":
@@ -248,7 +256,9 @@ def _summary(folds: pd.DataFrame, realized: pd.DataFrame, leakage: dict[str, Any
         "fold_count": len(folds),
         "scored_folds": scored,
         "mean_excess_return": _mean(folds["excess_return"]) if not folds.empty else None,
-        "mean_matched_excess_return": _mean(folds["matched_excess_return"]) if not folds.empty else None,
+        "mean_matched_excess_return": _mean(folds["matched_excess_return"])
+        if not folds.empty
+        else None,
         "mean_turnover": _mean(folds["avg_turnover"]) if not folds.empty else None,
         "descriptive_full_sample_net": _compound(sample["net_return"]),
         "descriptive_full_sample_benchmark": _compound(sample["benchmark_return"]),
@@ -257,7 +267,9 @@ def _summary(folds: pd.DataFrame, realized: pd.DataFrame, leakage: dict[str, Any
     }
 
 
-def _cash_returns(index: pd.Index, config: dict[str, Any], cash_yield: pd.Series | None) -> pd.Series:
+def _cash_returns(
+    index: pd.Index, config: dict[str, Any], cash_yield: pd.Series | None
+) -> pd.Series:
     mode = config["cash"]["mode"]
     if mode == "zero":
         return pd.Series(0.0, index=index)
@@ -311,7 +323,9 @@ def _audit(
         weight_diff = (
             partial.weights.loc[stamp].astype(float) - weights.loc[stamp].astype(float)
         ).abs()
-        regime_match = str(partial.position.loc[stamp, "regime"]) == str(position.loc[stamp, "regime"])
+        regime_match = str(partial.position.loc[stamp, "regime"]) == str(
+            position.loc[stamp, "regime"]
+        )
         checks.append(
             {
                 "as_of": pd.Timestamp(stamp).strftime("%Y-%m-%d"),
@@ -321,7 +335,9 @@ def _audit(
             }
         )
     passed = all(
-        item["regime_match"] and item["scale_diff"] <= 1e-10 and item["max_abs_weight_diff"] <= 1e-10
+        item["regime_match"]
+        and item["scale_diff"] <= 1e-10
+        and item["max_abs_weight_diff"] <= 1e-10
         for item in checks
     )
     return {
@@ -387,11 +403,19 @@ def _hedge_inputs(
     sleeves = [column for column in columns if column not in blocked and column in prices.columns]
     betas = pd.DataFrame(index=prices.index, columns=sleeves, dtype=float)
     fallback = pd.DataFrame(index=prices.index, columns=sleeves, dtype=float)
-    market = futures["IF"].pct_change() if "IF" in futures.columns else prices.iloc[:, 0].pct_change()
+    market = (
+        futures["IF"].pct_change(fill_method=None)
+        if "IF" in futures.columns
+        else prices.iloc[:, 0].pct_change()
+    )
     for sleeve in sleeves:
         sleeve_return = prices[sleeve].pct_change()
         contract = DEFAULT_HEDGE.get(sleeve, "IF")
-        hedge = futures[contract].pct_change() if contract in futures.columns else market
+        hedge = (
+            futures[contract].pct_change(fill_method=None)
+            if contract in futures.columns
+            else market
+        )
         betas[sleeve] = _trailing_beta(sleeve_return, hedge, window)
         fallback[sleeve] = _trailing_beta(sleeve_return, market, window)
     available = pd.DataFrame({name: futures[name].notna() for name in futures.columns})
@@ -424,8 +448,10 @@ def _add_capacity(
     if adv is None or capital is None:
         summary["median_participation"] = None
         summary["capacity"] = None
+        summary["capacity_basis"] = "unavailable_without_monetary_turnover_and_capital"
         return
-    activity = adv.reindex(realized.index).replace(0, pd.NA)
+    summary["capacity_basis"] = "CNY_book_activity_proxy"
+    activity = adv.reindex(realized.index).shift(1).replace(0, pd.NA)
     participation = realized["turnover"] * float(capital) / activity
     finite = participation.replace([float("inf"), float("-inf")], pd.NA).dropna()
     active = finite[finite.gt(1e-8)]

@@ -62,6 +62,8 @@ def run_horse_race(
                 {
                     "book": book_name,
                     "model": name,
+                    "sample_start": str(prices.index[0].date()),
+                    "sample_end": str(prices.index[-1].date()),
                     "status": result.summary["status"],
                     "scored_folds": result.summary["scored_folds"],
                     "mean_excess_return": result.summary["mean_excess_return"],

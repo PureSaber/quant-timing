@@ -68,6 +68,9 @@ def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
     capital_value = None if capital is None else _finite_number(capital, "costs.capital")
     if capital_value is not None and capital_value <= 0:
         raise ValueError("costs.capital must be positive")
+    activity_unit = (raw.get("activity") or {}).get("unit", "unknown")
+    if capital_value is not None and activity_unit != "CNY":
+        raise ValueError("costs.capital requires activity.unit: CNY monetary turnover")
     participation_cap = _unit_number(costs.get("participation_cap", 0.1), "costs.participation_cap")
 
     validation_raw = raw.get("validation")
@@ -94,6 +97,7 @@ def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
         "costs_bps": costs_bps,
         "impact_coef": impact_coef,
         "capital": capital_value,
+        "activity_unit": activity_unit,
         "participation_cap": participation_cap,
         "validation": validation,
         "style": style,
@@ -123,7 +127,9 @@ def _resolve_position(raw: object) -> dict[str, Any]:
                 "position.vol_percentile_threshold",
             ),
             "return_window": _positive_int(raw.get("return_window"), "position.return_window"),
-            "risk_off_return": _finite_number(raw.get("risk_off_return"), "position.risk_off_return"),
+            "risk_off_return": _finite_number(
+                raw.get("risk_off_return"), "position.risk_off_return"
+            ),
             "high_vol_scale": _unit_number(raw.get("high_vol_scale"), "position.high_vol_scale"),
             "risk_off_scale": _unit_number(raw.get("risk_off_scale"), "position.risk_off_scale"),
             "risk_on_scale": _unit_number(raw.get("risk_on_scale"), "position.risk_on_scale"),
@@ -140,7 +146,9 @@ def _resolve_position(raw: object) -> dict[str, Any]:
         resolved["target_vol"] = target
         resolved["vol_window"] = _positive_int(raw.get("vol_window"), "position.vol_window")
     elif model == "tsmom":
-        resolved["return_window"] = _positive_int(raw.get("return_window"), "position.return_window")
+        resolved["return_window"] = _positive_int(
+            raw.get("return_window"), "position.return_window"
+        )
     else:
         fast = _positive_int(raw.get("fast_window"), "position.fast_window")
         slow = _positive_int(raw.get("slow_window"), "position.slow_window")
@@ -202,7 +210,10 @@ def _resolve_pair(entry: object) -> dict[str, Any]:
     left = entry.get("left")
     right = entry.get("right")
     labels = (name, left, right)
-    if not all(isinstance(item, str) and item and item not in {"CASH", "FUTURES", "MARGIN"} for item in labels):
+    if not all(
+        isinstance(item, str) and item and item not in {"CASH", "FUTURES", "MARGIN"}
+        for item in labels
+    ):
         raise ValueError("style pair names must be non-empty sleeves")
     if left == right:
         raise ValueError(f"style pair {name} has identical sleeves")
@@ -232,7 +243,9 @@ def _resolve_group(entry: object) -> dict[str, Any]:
         raise ValueError("style group name is required")
     if not isinstance(members, list) or len(members) < 2:
         raise ValueError(f"style group {name} needs at least two members")
-    if any(not isinstance(member, str) or member in {"CASH", "FUTURES", "MARGIN"} for member in members):
+    if any(
+        not isinstance(member, str) or member in {"CASH", "FUTURES", "MARGIN"} for member in members
+    ):
         raise ValueError(f"style group {name} has an invalid member")
     if len(set(members)) != len(members):
         raise ValueError(f"style group {name} repeats a member")
@@ -252,7 +265,9 @@ def _resolve_group(entry: object) -> dict[str, Any]:
         if cap is None
         else _unit_number(cap, f"style.{name}.max_active_deviation"),
         "benchmark": benchmark,
-        "amount_window": _positive_int(entry.get("amount_window", 60), f"style.{name}.amount_window"),
+        "amount_window": _positive_int(
+            entry.get("amount_window", 60), f"style.{name}.amount_window"
+        ),
     }
 
 
@@ -367,7 +382,13 @@ def _resolve_regime(raw: object) -> dict[str, Any]:
 
 def _resolve_macro(raw: object) -> dict[str, Any]:
     if raw is None:
-        return {"context": None, "history": None, "incomplete_policy": None, "baseline_scale": None, "rules": []}
+        return {
+            "context": None,
+            "history": None,
+            "incomplete_policy": None,
+            "baseline_scale": None,
+            "rules": [],
+        }
     if not isinstance(raw, dict):
         raise ValueError("macro must be a mapping")
     context = raw.get("context")
