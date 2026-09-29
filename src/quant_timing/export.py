@@ -141,7 +141,11 @@ def _standard_frames(result: StudyResult, prices: pd.DataFrame) -> dict[str, pd.
                     "quantity": market_value / price,
                     "market_value": market_value,
                     "weight": weight_value,
-                    "side": "long" if weight_value > 1e-12 else "flat",
+                    "side": "long"
+                    if weight_value > 1e-12
+                    else "short"
+                    if weight_value < -1e-12
+                    else "flat",
                 }
             )
             exposure_rows.append(

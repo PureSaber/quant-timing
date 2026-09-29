@@ -1,0 +1,109 @@
+market: hs300
+run_id: market-comparison
+input:
+  path: ../data/public/indices.csv
+  format: wide
+  date_col: date
+  start: "2019-03-08"
+signals:
+  path: ../data/public/signals.csv
+costs:
+  bps: 5
+  impact_coef: 0.1
+cash:
+  mode: price
+  yield_column: bond_etf
+futures:
+  path: ../data/public/futures.csv
+activity:
+  path: ../data/public/amounts.csv
+  unit: volume
+overlay:
+  mode: futures
+  contracts: [IF, IC, IM]
+  margin_rate: 0.12
+  beta_window: 60
+valuation:
+  column: hs300_peg
+  lookback: 252
+  expensive_percentile: 0.2
+  scale_cap: 0.6
+constraints:
+  max_daily_change: 0.05
+  drawdown_line: 0.15
+  drawdown_floor: 0.2
+validation:
+  train_size: 500
+  test_size: 120
+  step_size: 120
+  embargo: 20
+style:
+  return_window: 60
+  tilt: 0.7
+  threshold: 0.0
+  pairs:
+    - name: size
+      left: csi1000
+      right: csi500
+      group_weight: 0.2
+      signal: momentum
+    - name: cni_style
+      left: cni_value
+      right: cni_growth
+      group_weight: 0.2
+      signal: momentum
+    - name: value_growth
+      left: csi300_value
+      right: csi300_growth
+      group_weight: 0.2
+      signal: valuation_spread
+      signal_column: value_growth
+    - name: dividend_cycle
+      left: dividend
+      right: cyclical
+      group_weight: 0.2
+      signal: momentum
+  groups:
+    - name: industry
+      members: [bank, broker, pharma, electronics]
+      group_weight: 0.2
+      signal: crowding
+      max_active_deviation: 0.04
+      benchmark: amount_share
+      amount_window: 60
+models:
+  rules:
+    vol_window: 20
+    vol_lookback: 120
+    vol_percentile_threshold: 0.8
+    return_window: 60
+    risk_off_return: -0.08
+    high_vol_scale: 0.5
+    risk_off_scale: 0.3
+    risk_on_scale: 1.0
+  vol_target:
+    target_vol: 0.15
+    vol_window: 20
+    floor: 0.0
+    cap: 1.0
+  tsmom:
+    return_window: 252
+    floor: 0.0
+    cap: 1.0
+  moving_average:
+    fast_window: 50
+    slow_window: 200
+    floor: 0.0
+    cap: 1.0
+comparison:
+  models: [rules, vol_target, tsmom, moving_average]
+  books:
+    - name: position_hs300
+      drop_style: true
+      overlay_mode: cash
+    - name: style
+      drop_style: false
+      overlay_mode: cash
+    - name: futures_hs300
+      drop_style: true
+      overlay_mode: futures

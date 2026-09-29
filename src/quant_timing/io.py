@@ -64,6 +64,43 @@ def load_scale_history(path: Path) -> pd.Series:
     return series
 
 
+def load_signal_panel(path: Path, date_col: str = "date") -> pd.DataFrame:
+    frame = pd.read_csv(path)
+    if date_col not in frame.columns:
+        raise ValueError(f"signal panel missing {date_col}")
+    frame[date_col] = pd.to_datetime(frame[date_col])
+    if frame[date_col].duplicated().any():
+        raise ValueError(f"duplicate signal dates in {path}")
+    panel = frame.set_index(date_col).sort_index()
+    panel.index.name = "date"
+    return panel.apply(pd.to_numeric, errors="raise")
+
+
+def load_macro_history(path: Path) -> pd.DataFrame:
+    frame = pd.read_csv(path)
+    required = {"date", "series", "value", "available_at"}
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError(f"macro history missing {sorted(missing)}")
+    frame = frame.copy()
+    frame["available_at"] = pd.to_datetime(frame["available_at"])
+    frame["value"] = pd.to_numeric(frame["value"], errors="raise")
+    return frame
+
+
+def load_yield(path: Path, column: str, date_col: str = "date") -> pd.Series:
+    frame = pd.read_csv(path)
+    if date_col not in frame.columns or column not in frame.columns:
+        raise ValueError(f"yield file needs {date_col} and {column}")
+    dates = pd.to_datetime(frame[date_col])
+    values = pd.to_numeric(frame[column], errors="raise")
+    series = pd.Series(values.to_numpy(), index=dates).sort_index()
+    series.index.name = "date"
+    if series.isna().any() or (series < 0).any():
+        raise ValueError(f"yield {column} must be nonnegative")
+    return series
+
+
 def read_position_scale(path: Path) -> float:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if "position_scale" not in payload:

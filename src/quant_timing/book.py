@@ -4,6 +4,8 @@ import pandas as pd
 
 from quant_timing.style import style_sleeves
 
+_FUTURES_COLUMNS = {"FUTURES", "IF", "IC", "IM"}
+
 
 def assemble_weights(
     prices: pd.DataFrame,
@@ -38,6 +40,10 @@ def assemble_weights(
             share = float(pair["group_weight"]) * 0.5
             matched.loc[ready, pair["left"]] = (scale.loc[ready] * share).to_numpy()
             matched.loc[ready, pair["right"]] = (scale.loc[ready] * share).to_numpy()
+        for group in style.get("groups") or []:
+            share = float(group["group_weight"]) / len(group["members"])
+            for member in group["members"]:
+                matched.loc[ready, member] = (scale.loc[ready] * share).to_numpy()
     weights["CASH"] = 1.0 - scale
     matched["CASH"] = 1.0 - scale
     _assert_book(weights)
@@ -45,12 +51,17 @@ def assemble_weights(
     return weights, matched
 
 
+FUTURES_COLUMNS = {"FUTURES", "IF", "IC", "IM"}
+
+
 def _assert_book(weights: pd.DataFrame) -> None:
-    totals = weights.sum(axis=1)
+    funded = [column for column in weights.columns if column not in _FUTURES_COLUMNS]
+    totals = weights[funded].sum(axis=1)
     if not totals.sub(1.0).abs().le(1e-8).all():
-        raise ValueError("portfolio weights must sum to 1")
-    if weights.lt(-1e-12).any().any():
-        raise ValueError("portfolio weights must be long-only")
+        raise ValueError("funded portfolio weights must sum to 1")
+    long_only = [column for column in funded]
+    if weights[long_only].lt(-1e-12).any().any():
+        raise ValueError("funded weights must be long-only")
 
 
 def simulate(
@@ -59,6 +70,11 @@ def simulate(
     prices: pd.DataFrame,
     market: str,
     cost_bps: float,
+    cash_returns: pd.Series | None = None,
+    impact_coef: float = 0.0,
+    extra_returns: dict[str, pd.Series] | None = None,
+    adv: pd.Series | None = None,
+    capital: float | None = None,
 ) -> pd.DataFrame:
     """Earn the next bar's return with today's weights and charge today's turnover on that bar.
 
@@ -66,8 +82,16 @@ def simulate(
     """
     asset = prices.pct_change()
     asset["CASH"] = 0.0
-    gross, net, cost, turnover = _path(weights, asset, cost_bps)
-    matched_gross, matched_net, matched_cost, matched_turnover = _path(matched, asset, cost_bps)
+    if cash_returns is not None:
+        asset["CASH"] = cash_returns.reindex(asset.index)
+    for name, series in (extra_returns or {}).items():
+        asset[name] = series.reindex(asset.index)
+    if "MARGIN" in weights.columns:
+        asset["MARGIN"] = 0.0
+    gross, net, cost, turnover = _path(weights, asset, cost_bps, impact_coef, adv, capital)
+    matched_gross, matched_net, matched_cost, matched_turnover = _path(
+        matched, asset, cost_bps, impact_coef, adv, capital
+    )
     frame = pd.DataFrame(
         {
             "decision_date": pd.Series(weights.index, index=weights.index).shift(1),
@@ -89,17 +113,49 @@ def simulate(
 
 
 def _path(
-    weights: pd.DataFrame, asset: pd.DataFrame, cost_bps: float
+    weights: pd.DataFrame,
+    asset: pd.DataFrame,
+    cost_bps: float,
+    impact_coef: float = 0.0,
+    adv: pd.Series | None = None,
+    capital: float | None = None,
 ) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
     columns = list(weights.columns)
     returns = asset.reindex(columns=columns)
-    returns["CASH"] = 0.0
-    gross = (weights.shift(1) * returns).sum(axis=1, min_count=len(columns))
+    if "CASH" in returns.columns:
+        returns["CASH"] = returns["CASH"].fillna(0.0)
+    if "MARGIN" in returns.columns:
+        returns["MARGIN"] = returns["MARGIN"].fillna(0.0)
+    gross_parts = weights.shift(1) * returns
+    for column in _FUTURES_COLUMNS:
+        if column not in gross_parts.columns:
+            continue
+        idle = weights[column].shift(1).abs().fillna(0.0).le(1e-12)
+        if (gross_parts[column].isna() & ~idle).any():
+            raise ValueError(f"missing futures return while holding {column}")
+        gross_parts.loc[idle, column] = gross_parts.loc[idle, column].fillna(0.0)
+    gross = gross_parts.sum(axis=1, min_count=len(columns))
     traded = weights.diff().abs().sum(axis=1) / 2.0
     traded.iloc[0] = 0.0
     turnover = traded.shift(1)
     cost = turnover * (cost_bps / 10_000.0)
+    if impact_coef:
+        cost = cost + _impact(turnover, float(impact_coef), adv, capital)
     return gross, gross - cost, cost, turnover
+
+
+def _impact(
+    turnover: pd.Series,
+    impact_coef: float,
+    adv: pd.Series | None,
+    capital: float | None,
+) -> pd.Series:
+    traded = turnover.clip(lower=0.0)
+    if adv is None or capital is None:
+        return impact_coef * traded.pow(1.5)
+    activity = adv.reindex(turnover.index).shift(1).replace(0, pd.NA)
+    participation = traded * float(capital) / activity
+    return impact_coef * traded * participation.clip(lower=0.0).pow(0.5)
 
 
 def _nav(net_return: pd.Series) -> pd.Series:
