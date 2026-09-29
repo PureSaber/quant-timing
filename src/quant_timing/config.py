@@ -64,6 +64,11 @@ def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
     impact_coef = _finite_number(costs.get("impact_coef", 0.0), "costs.impact_coef")
     if impact_coef < 0:
         raise ValueError("costs.impact_coef must be nonnegative")
+    capital = costs.get("capital")
+    capital_value = None if capital is None else _finite_number(capital, "costs.capital")
+    if capital_value is not None and capital_value <= 0:
+        raise ValueError("costs.capital must be positive")
+    participation_cap = _unit_number(costs.get("participation_cap", 0.1), "costs.participation_cap")
 
     validation_raw = raw.get("validation")
     if not isinstance(validation_raw, dict):
@@ -88,6 +93,8 @@ def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
         "position": position,
         "costs_bps": costs_bps,
         "impact_coef": impact_coef,
+        "capital": capital_value,
+        "participation_cap": participation_cap,
         "validation": validation,
         "style": style,
         "regime": _resolve_regime(raw.get("regime")),
@@ -95,6 +102,7 @@ def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
         "constraints": _resolve_constraints(raw.get("constraints")),
         "overlay": _resolve_overlay(raw.get("overlay")),
         "cash": _resolve_cash(raw.get("cash")),
+        "valuation": _resolve_valuation(raw.get("valuation")),
         "run_id": _run_id(raw.get("run_id", "timing")),
     }
 
@@ -232,6 +240,9 @@ def _resolve_group(entry: object) -> dict[str, Any]:
     if signal not in {"momentum", "valuation_spread", "revision", "crowding"}:
         raise ValueError(f"style group {name} has an unknown signal")
     cap = entry.get("max_active_deviation")
+    benchmark = entry.get("benchmark", "equal")
+    if benchmark not in {"equal", "amount_share"}:
+        raise ValueError(f"style group {name} benchmark must be equal or amount_share")
     return {
         "name": name,
         "members": list(members),
@@ -240,6 +251,8 @@ def _resolve_group(entry: object) -> dict[str, Any]:
         "max_active_deviation": None
         if cap is None
         else _unit_number(cap, f"style.{name}.max_active_deviation"),
+        "benchmark": benchmark,
+        "amount_window": _positive_int(entry.get("amount_window", 60), f"style.{name}.amount_window"),
     }
 
 
@@ -262,19 +275,53 @@ def _resolve_constraints(raw: object) -> dict[str, Any]:
 
 def _resolve_overlay(raw: object) -> dict[str, Any]:
     if raw is None:
-        return {"mode": "cash", "price": None, "margin_rate": 0.0}
+        return {
+            "mode": "cash",
+            "price": None,
+            "margin_rate": 0.0,
+            "contracts": [],
+            "beta_window": 60,
+        }
     if not isinstance(raw, dict):
         raise ValueError("overlay must be a mapping")
     mode = raw.get("mode", "cash")
     if mode not in {"cash", "futures"}:
         raise ValueError("overlay.mode must be cash or futures")
     price = raw.get("price")
-    if mode == "futures" and not isinstance(price, str):
-        raise ValueError("overlay.price is required for futures")
+    contracts = raw.get("contracts") or ([] if price is None else [str(price)])
+    if mode == "futures" and not contracts:
+        raise ValueError("overlay.contracts or overlay.price is required for futures")
+    if any(contract not in {"IF", "IC", "IM"} for contract in contracts):
+        raise ValueError("overlay contracts must be IF, IC, or IM")
     margin = _unit_number(raw.get("margin_rate", 0.0), "overlay.margin_rate")
     if margin >= 1:
         raise ValueError("overlay.margin_rate must be below 1")
-    return {"mode": mode, "price": price, "margin_rate": margin}
+    return {
+        "mode": mode,
+        "price": price,
+        "margin_rate": margin,
+        "contracts": [str(contract) for contract in contracts],
+        "beta_window": _positive_int(raw.get("beta_window", 60), "overlay.beta_window"),
+    }
+
+
+def _resolve_valuation(raw: object) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("valuation must be a mapping")
+    column = raw.get("column")
+    if not isinstance(column, str) or not column:
+        raise ValueError("valuation.column is required")
+    return {
+        "column": column,
+        "lookback": _positive_int(raw.get("lookback", 252), "valuation.lookback"),
+        "expensive_percentile": _unit_number(
+            raw.get("expensive_percentile", 0.2),
+            "valuation.expensive_percentile",
+        ),
+        "scale_cap": _unit_number(raw.get("scale_cap", 0.6), "valuation.scale_cap"),
+    }
 
 
 def _resolve_cash(raw: object) -> dict[str, Any]:

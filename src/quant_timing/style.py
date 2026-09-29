@@ -16,6 +16,7 @@ def style_internal_weights(
     prices: pd.DataFrame,
     style: dict,
     signals: pd.DataFrame | None = None,
+    amounts: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     """Long-only sleeve weights known at the close. Each ready row sums to 1."""
     window = int(style["return_window"])
@@ -33,7 +34,7 @@ def style_internal_weights(
         weights[pair["right"]] = right_weight
     for group in style.get("groups") or []:
         group_ready, member_weights = _group_weights(
-            prices, group, signals, window, tilt, threshold
+            prices, group, signals, window, tilt, threshold, amounts
         )
         ready = ready & group_ready
         for member, member_weight in member_weights.items():
@@ -74,6 +75,7 @@ def _group_weights(
     window: int,
     tilt: float,
     threshold: float,
+    amounts: pd.DataFrame | None,
 ) -> tuple[pd.Series, dict[str, pd.Series]]:
     members = list(group["members"])
     signal_name = str(group.get("signal", "momentum"))
@@ -100,12 +102,60 @@ def _group_weights(
     centered = centered.where(centered.abs().ge(threshold), 0.0)
     raw = base * (1.0 + strength * centered.div(centered.abs().sum(axis=1).replace(0, 1), axis=0))
     cap = group.get("max_active_deviation")
+    group_weight = float(group["group_weight"])
+    if group.get("benchmark") == "amount_share":
+        if amounts is None:
+            raise ValueError(f"style group {group['name']} needs an amount panel")
+        amount_window = int(group.get("amount_window", 60))
+        trailing = amounts.reindex(index=prices.index, columns=members).rolling(amount_window).sum()
+        benchmark = trailing.div(trailing.sum(axis=1).replace(0, pd.NA), axis=0) * group_weight
+        if cap is not None:
+            raw = _cap_to_benchmark(raw, benchmark, float(cap), group_weight)
+        else:
+            raw = raw.clip(lower=0.0)
+            total = raw.sum(axis=1).replace(0, pd.NA)
+            raw = raw.div(total, axis=0) * group_weight
+        return ready, {member: raw[member] for member in members}
     if cap is not None:
         raw = raw.clip(lower=base - float(cap), upper=base + float(cap))
     raw = raw.clip(lower=0.0)
     total = raw.sum(axis=1).replace(0, pd.NA)
-    raw = raw.div(total, axis=0) * float(group["group_weight"])
+    raw = raw.div(total, axis=0) * group_weight
     return ready, {member: raw[member] for member in members}
+
+
+def _cap_to_benchmark(
+    raw: pd.DataFrame,
+    benchmark: pd.DataFrame,
+    cap: float,
+    total: float,
+) -> pd.DataFrame:
+    rows = []
+    for stamp in raw.index:
+        rows.append(_cap_row(raw.loc[stamp], benchmark.loc[stamp], cap, total))
+    return pd.DataFrame(rows, index=raw.index, columns=raw.columns)
+
+
+def _cap_row(raw: pd.Series, benchmark: pd.Series, cap: float, total: float) -> pd.Series:
+    if benchmark.isna().any() or raw.isna().any():
+        base = total / len(raw)
+        lower = max(base - cap, 0.0)
+        upper = base + cap
+        weights = raw.fillna(base).clip(lower=lower, upper=upper)
+    else:
+        lower = (benchmark - cap).clip(lower=0.0)
+        upper = benchmark + cap
+        weights = raw.clip(lower=lower, upper=upper)
+    for _ in range(4):
+        gap = total - float(weights.sum())
+        if abs(gap) < 1e-10:
+            break
+        room = (upper - weights).clip(lower=0.0) if gap > 0 else (weights - lower).clip(lower=0.0)
+        room_sum = float(room.sum())
+        if room_sum <= 1e-12:
+            break
+        weights = (weights + gap * room / room_sum).clip(lower=lower, upper=upper)
+    return weights
 
 
 def _spread(

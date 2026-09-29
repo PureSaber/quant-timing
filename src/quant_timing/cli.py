@@ -85,6 +85,9 @@ def _load_market(raw: dict, resolved: dict, config_path: Path) -> tuple:
         "macro_history": None,
         "cash_yield": None,
         "futures_price": None,
+        "futures_prices": None,
+        "amounts": None,
+        "peg": None,
     }
     if resolved["regime"]["history"]:
         extras["regime_history"] = load_scale_history(
@@ -103,6 +106,15 @@ def _load_market(raw: dict, resolved: dict, config_path: Path) -> tuple:
     signal_path = (raw.get("signals") or {}).get("path")
     if signal_path:
         extras["signal_panel"] = load_signal_panel(resolve_path(str(signal_path), config_path))
+    if resolved["valuation"] is not None:
+        column = str(resolved["valuation"]["column"])
+        panel = extras["signal_panel"]
+        if panel is None or column not in panel.columns:
+            raise ValueError(f"valuation column {column} is missing from the signal panel")
+        extras["peg"] = panel[column]
+    activity_path = (raw.get("activity") or {}).get("path")
+    if activity_path:
+        extras["amounts"] = load_signal_panel(resolve_path(str(activity_path), config_path))
     if resolved["cash"]["mode"] == "yield":
         column = str(resolved["cash"]["yield_column"])
         if column not in prices.columns:
@@ -116,11 +128,16 @@ def _load_market(raw: dict, resolved: dict, config_path: Path) -> tuple:
         extras["cash_yield"] = prices[column].astype(float).ffill().pct_change()
         prices = prices.drop(columns=[column])
     if resolved["overlay"]["mode"] == "futures":
-        column = str(resolved["overlay"]["price"])
-        if column not in prices.columns:
-            raise ValueError(f"futures price column {column} is missing from prices")
-        extras["futures_price"] = prices[column]
-        prices = prices.drop(columns=[column])
+        futures_path = (raw.get("futures") or {}).get("path")
+        if futures_path:
+            extras["futures_prices"] = load_signal_panel(resolve_path(str(futures_path), config_path))
+        else:
+            columns = list(resolved["overlay"]["contracts"])
+            missing = [column for column in columns if column not in prices.columns]
+            if missing:
+                raise ValueError(f"futures price columns {missing} are missing from prices")
+            extras["futures_prices"] = prices[columns]
+            prices = prices.drop(columns=columns)
     return prices, extras
 
 

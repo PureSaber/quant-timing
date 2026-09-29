@@ -8,10 +8,14 @@ import pandas as pd
 
 from quant_timing.book import assemble_weights, simulate
 from quant_timing.config import resolve_config
-from quant_timing.constraints import constrain_scale, full_equity_return
+from quant_timing.constraints import (
+    apply_earnings_yield_cap,
+    constrain_scale,
+    full_equity_return,
+)
 from quant_timing.macro_history import apply_macro_history
 from quant_timing.macro_policy import apply_macro, normalize_macro
-from quant_timing.overlay import apply_futures_overlay, cash_returns_from_yield
+from quant_timing.overlay import DEFAULT_HEDGE, apply_futures_overlay, cash_returns_from_yield
 from quant_timing.position_models import build_position
 from quant_timing.style import style_internal_weights, style_sleeves
 from quant_timing.walkforward import iter_folds, score_folds
@@ -44,6 +48,9 @@ def run_study(
     macro_history: pd.DataFrame | None = None,
     cash_yield: pd.Series | None = None,
     futures_price: pd.Series | None = None,
+    futures_prices: pd.DataFrame | None = None,
+    amounts: pd.DataFrame | None = None,
+    peg: pd.Series | None = None,
     audit: bool = True,
 ) -> StudyResult:
     config = resolve_config(raw_config)
@@ -54,8 +61,19 @@ def run_study(
     position["position_scale"] = apply_macro_history(
         position["position_scale"], macro_history, config["macro"]
     )
+    if config["valuation"] is not None:
+        if peg is None:
+            raise ValueError("valuation peg series was not loaded")
+        rule = config["valuation"]
+        position["position_scale"] = apply_earnings_yield_cap(
+            position["position_scale"],
+            peg,
+            lookback=int(rule["lookback"]),
+            expensive_percentile=float(rule["expensive_percentile"]),
+            scale_cap=float(rule["scale_cap"]),
+        )
     style = config["style"]
-    internal = style_internal_weights(prices, style, signal_panel) if style else None
+    internal = style_internal_weights(prices, style, signal_panel, amounts) if style else None
     cash_returns = _cash_returns(prices.index, config, cash_yield)
     constraints = config["constraints"]
     if constraints["max_daily_change"] is not None or constraints["drawdown_line"] is not None:
@@ -69,13 +87,31 @@ def run_study(
         )
     weights, matched = assemble_weights(prices, position, style, internal, config["market"])
     extra_returns = None
-    if config["overlay"]["mode"] == "futures":
-        if futures_price is None:
-            raise ValueError("futures price was not loaded")
-        margin = float(config["overlay"]["margin_rate"])
-        weights = apply_futures_overlay(weights, position["position_scale"], margin_rate=margin)
-        matched = apply_futures_overlay(matched, position["position_scale"], margin_rate=margin)
-        extra_returns = {"FUTURES": futures_price.astype(float).pct_change()}
+    overlay = config["overlay"]
+    if overlay["mode"] == "futures":
+        futures = _futures_frame(futures_prices, futures_price, prices.index, overlay["contracts"])
+        betas, fallback, available = _hedge_inputs(
+            prices, futures, list(weights.columns), int(overlay["beta_window"])
+        )
+        margin = float(overlay["margin_rate"])
+        weights = apply_futures_overlay(
+            weights,
+            position["position_scale"],
+            margin_rate=margin,
+            betas=betas,
+            fallback_betas=fallback,
+            available=available,
+        )
+        matched = apply_futures_overlay(
+            matched,
+            position["position_scale"],
+            margin_rate=margin,
+            betas=betas,
+            fallback_betas=fallback,
+            available=available,
+        )
+        extra_returns = {name: futures[name].pct_change().fillna(0.0) for name in futures.columns}
+    adv = _book_activity(amounts, weights) if amounts is not None else None
     realized = simulate(
         weights,
         matched,
@@ -85,6 +121,8 @@ def run_study(
         None if config["cash"]["mode"] == "zero" else cash_returns,
         float(config["impact_coef"]),
         extra_returns,
+        adv,
+        config["capital"],
     )
     folds = score_folds(
         realized,
@@ -102,11 +140,15 @@ def run_study(
             macro_history=macro_history,
             cash_yield=cash_yield,
             futures_price=futures_price,
+            futures_prices=futures_prices,
+            amounts=amounts,
+            peg=peg,
         )
         if audit
         else {"passed": False, "reason": "not_run", "checks": []}
     )
     summary = _summary(folds, realized, leakage)
+    _add_capacity(summary, realized, adv, config)
     latest = _latest(position.iloc[-1], config, context, snapshot)
     return StudyResult(
         config=config,
@@ -238,6 +280,9 @@ def _audit(
     macro_history: pd.DataFrame | None,
     cash_yield: pd.Series | None,
     futures_price: pd.Series | None,
+    futures_prices: pd.DataFrame | None,
+    amounts: pd.DataFrame | None,
+    peg: pd.Series | None,
 ) -> dict[str, Any]:
     candidates = list(prices.index[:-1])
     if len(candidates) < 2:
@@ -254,6 +299,9 @@ def _audit(
             macro_history=macro_history,
             cash_yield=cash_yield,
             futures_price=futures_price,
+            futures_prices=futures_prices,
+            amounts=amounts,
+            peg=peg,
             audit=False,
         )
         scale_diff = abs(
@@ -312,3 +360,75 @@ def _compound(series: pd.Series) -> float | None:
     if series.empty or series.isna().any():
         return None
     return float((1.0 + series).prod() - 1.0)
+
+
+def _futures_frame(
+    frame: pd.DataFrame | None,
+    series: pd.Series | None,
+    index: pd.Index,
+    contracts: list[str],
+) -> pd.DataFrame:
+    if frame is None and series is None:
+        raise ValueError("futures prices were not loaded")
+    prices = pd.DataFrame({"IF": series}) if frame is None else frame
+    missing = [name for name in contracts if name not in prices.columns]
+    if missing:
+        raise ValueError(f"futures prices missing {missing}")
+    return prices.loc[:, list(contracts)].reindex(index).astype(float)
+
+
+def _hedge_inputs(
+    prices: pd.DataFrame,
+    futures: pd.DataFrame,
+    columns: list[str],
+    window: int,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    blocked = {"CASH", "MARGIN", "IF", "IC", "IM", "FUTURES"}
+    sleeves = [column for column in columns if column not in blocked and column in prices.columns]
+    betas = pd.DataFrame(index=prices.index, columns=sleeves, dtype=float)
+    fallback = pd.DataFrame(index=prices.index, columns=sleeves, dtype=float)
+    market = futures["IF"].pct_change() if "IF" in futures.columns else prices.iloc[:, 0].pct_change()
+    for sleeve in sleeves:
+        sleeve_return = prices[sleeve].pct_change()
+        contract = DEFAULT_HEDGE.get(sleeve, "IF")
+        hedge = futures[contract].pct_change() if contract in futures.columns else market
+        betas[sleeve] = _trailing_beta(sleeve_return, hedge, window)
+        fallback[sleeve] = _trailing_beta(sleeve_return, market, window)
+    available = pd.DataFrame({name: futures[name].notna() for name in futures.columns})
+    return betas, fallback, available
+
+
+def _trailing_beta(left: pd.Series, right: pd.Series, window: int) -> pd.Series:
+    covariance = left.rolling(window).cov(right)
+    variance = right.rolling(window).var().replace(0, pd.NA)
+    return (covariance / variance).clip(lower=0.2, upper=3.0).fillna(1.0)
+
+
+def _book_activity(amounts: pd.DataFrame, weights: pd.DataFrame) -> pd.Series | None:
+    equity = [column for column in weights.columns if column in amounts.columns]
+    if not equity:
+        return None
+    held = weights[equity].clip(lower=0.0)
+    total = held.sum(axis=1).replace(0, pd.NA)
+    share = held.div(total, axis=0).fillna(0.0)
+    return (share * amounts.reindex(index=weights.index, columns=equity).fillna(0.0)).sum(axis=1)
+
+
+def _add_capacity(
+    summary: dict[str, Any],
+    realized: pd.DataFrame,
+    adv: pd.Series | None,
+    config: dict[str, Any],
+) -> None:
+    capital = config["capital"]
+    if adv is None or capital is None:
+        summary["median_participation"] = None
+        summary["capacity"] = None
+        return
+    activity = adv.reindex(realized.index).replace(0, pd.NA)
+    participation = realized["turnover"] * float(capital) / activity
+    finite = participation.replace([float("inf"), float("-inf")], pd.NA).dropna()
+    active = finite[finite.gt(1e-8)]
+    summary["median_participation"] = None if active.empty else float(active.median())
+    cap = float(config["participation_cap"])
+    summary["capacity"] = None if active.empty else float((float(capital) * cap / active).median())

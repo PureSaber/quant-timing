@@ -61,7 +61,7 @@ python tools/fetch_public_indices.py
 python -m quant_timing compare --config configs/market_comparison.yaml --out studies/market_comparison
 ```
 
-这次公开样本上的四条仓位模型，扣费后的走步折平均超额都低于沪深 300。结果写在 `studies/market_comparison/model_comparison.csv`。它是一次对照，不是收益承诺。数据口径见 `data/public/SOURCE.md`。
+这次公开样本分成三张表，数字在 `studies/market_comparison/model_comparison.csv`。只做沪深 300 仓位、现金加国债 ETF 时，三档规则和波动率目标的走步折平均超额接近 0，两条趋势规则为负。风格组合在同一仓位路径下仍落后于组内等权。期货覆盖改成按保证金出资、并用 IF、IC、IM 对冲对应袖套之后，单独套在沪深 300 上仍落后于不加期货的版本。这是一次对照，不是收益承诺。数据口径见 `data/public/SOURCE.md`。
 
 外部 regime 有两种读法，不能同时用：
 

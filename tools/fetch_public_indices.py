@@ -10,11 +10,21 @@ proxy. Earnings revisions are not in these feeds and are not invented.
 from __future__ import annotations
 
 import json
+import sys
 import time
 from pathlib import Path
 from urllib.request import Request, urlopen
 
 import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from quant_timing.futures import (  # noqa: E402
+    dominant_schedule,
+    price_index_from_returns,
+    quarter_contracts,
+    stitch_returns,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "data" / "public"
@@ -97,6 +107,44 @@ def csi_perf(code: str) -> pd.DataFrame:
     return frame
 
 
+def sina_contract(symbol: str) -> pd.Series:
+    url = (
+        "https://stock2.finance.sina.com.cn/futures/api/jsonp.php/"
+        f"var%20_{symbol}=/InnerFuturesNewService.getDailyKLine?symbol={symbol}"
+    )
+    try:
+        text = _get(url).decode("utf-8", errors="replace")
+        body = text[text.find("[") : text.rfind("]") + 1]
+        rows = json.loads(body) if body.startswith("[") else []
+    except Exception:
+        return pd.Series(dtype=float)
+    if not rows:
+        return pd.Series(dtype=float)
+    series = pd.Series({row["d"]: float(row["c"]) for row in rows}, dtype=float)
+    series.index = pd.to_datetime(series.index)
+    return series.sort_index()
+
+
+def _stitched(prefix: str, calendar: pd.DatetimeIndex) -> pd.Series:
+    contracts = quarter_contracts(prefix, calendar.min(), calendar.max())
+    prices: dict[str, pd.Series] = {}
+    for symbol, _expiry in contracts:
+        series = sina_contract(symbol)
+        if not series.empty:
+            prices[symbol] = series
+        time.sleep(0.12)
+    listed = [(symbol, expiry) for symbol, expiry in contracts if symbol in prices]
+    print(prefix, "contracts", len(listed))
+    schedule = dominant_schedule(calendar, listed)
+    return price_index_from_returns(stitch_returns(prices, schedule))
+
+
+def _write(frame: pd.DataFrame, path: Path) -> None:
+    output = frame.copy()
+    output.insert(0, "date", output.index.strftime("%Y-%m-%d"))
+    output.to_csv(path, index=False, float_format="%.6g")
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     closes = {}
@@ -107,28 +155,37 @@ def main() -> None:
         volumes[name] = frame["volume"]
         time.sleep(0.3)
     prices = pd.DataFrame(closes).sort_index()
-    prices["IF"] = futures_if()
     value = csi_perf("000919")
     growth = csi_perf("000918")
+    hs300_peg = csi_perf("000300")["peg"]
     prices["csi300_value"] = value["close"]
     prices["csi300_growth"] = growth["close"]
     prices = prices.dropna()
     volume = pd.DataFrame(volumes).reindex(prices.index)
-    crowding = volume.rolling(20).mean()
     valuation = (growth["peg"] - value["peg"]).reindex(prices.index)
-    signals = pd.DataFrame({"value_growth": valuation}, index=prices.index)
+    value_earnings = (value["close"] / value["peg"]).pct_change(60)
+    growth_earnings = (growth["close"] / growth["peg"]).pct_change(60)
+    signals = pd.DataFrame(
+        {
+            "value_growth": valuation,
+            "revision": (value_earnings - growth_earnings).reindex(prices.index),
+            "hs300_peg": hs300_peg.reindex(prices.index),
+        },
+        index=prices.index,
+    )
     for name in ("bank", "broker", "pharma", "electronics"):
-        signals[f"industry.{name}"] = crowding[name]
-    signals = signals.dropna()
+        signals[f"industry.{name}"] = volume[name].rolling(20).mean()
+    futures = pd.DataFrame({name: _stitched(name, prices.index) for name in ("IF", "IC", "IM")})
+    signals = signals.dropna(subset=["value_growth", "hs300_peg"])
     common = prices.index.intersection(signals.index)
     prices = prices.loc[common]
     signals = signals.loc[common]
-    prices_out = prices.copy()
-    prices_out.insert(0, "date", prices_out.index.strftime("%Y-%m-%d"))
-    signals_out = signals.copy()
-    signals_out.insert(0, "date", signals_out.index.strftime("%Y-%m-%d"))
-    prices_out.to_csv(OUT / "indices.csv", index=False, float_format="%.6g")
-    signals_out.to_csv(OUT / "signals.csv", index=False, float_format="%.6g")
+    volume = volume.reindex(common)
+    futures = futures.reindex(common)
+    _write(prices, OUT / "indices.csv")
+    _write(signals, OUT / "signals.csv")
+    _write(volume, OUT / "amounts.csv")
+    _write(futures, OUT / "futures.csv")
     note = OUT / "SOURCE.md"
     note.write_text(
         "\n".join(
@@ -138,15 +195,21 @@ def main() -> None:
                 "Downloaded 2026-09-29.",
                 "",
                 "Index and bond ETF bars are the latest 2500 daily closes and volumes from",
-                "Sina `CN_MarketData.getKLineData`. `IF` is Sina `IF0`, the continuous main",
-                "contract, not a custom roll. `bond_etf` is SSE 511010 and is used only as a",
-                "cash/bond total-return proxy.",
+                "Sina `CN_MarketData.getKLineData`. `futures.csv` is a back-adjusted IF, IC, and IM",
+                "series: each day's return uses the dominant quarterly contract's own previous",
+                "close, rolled five trading days before the third Friday. IM before listing falls",
+                "back to IF inside the study. `bond_etf` is SSE 511010 and is only a cash/bond",
+                "total-return proxy. `amounts.csv` is Sina volume, used as the activity unit for",
+                "impact and for the industry amount-share benchmark. That benchmark is not the",
+                "official historical industry weight of the CSI 300.",
                 "",
                 "`signals.csv` column `value_growth` is CSI 300 Growth published `peg` minus",
                 "CSI 300 Value `peg` (000918 minus 000919). A positive number means value is",
                 "cheaper on that published field. Those closes also come from the CSI feed",
                 "because Sina's copies stop updating. Industry columns are 20-day average",
-                "volumes, a crowding proxy. Earnings-revision history is not in this source.",
+                "volumes, a crowding proxy. `revision` is the 60-day change in close divided by",
+                "the published peg for CSI 300 value minus the same change for CSI 300 growth.",
+                "It is an implied-earnings proxy, not an analyst revision feed.",
                 "Dividend is SSE 000015 and the cyclical sleeve is CSI Energy 000928.",
                 "The Eastmoney mutual-deal report publishes gross turnover and a text quota",
                 "flag, not a signed northbound flow, so it is not used as a macro rule.",

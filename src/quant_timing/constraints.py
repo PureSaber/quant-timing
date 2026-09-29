@@ -58,3 +58,30 @@ def full_equity_return(
     equity = returns[market].copy()
     equity.loc[ready] = mix.loc[ready]
     return equity
+
+
+def apply_earnings_yield_cap(
+    scale: pd.Series,
+    peg: pd.Series,
+    *,
+    lookback: int,
+    expensive_percentile: float,
+    scale_cap: float,
+) -> pd.Series:
+    """Cap exposure when the earnings yield is cheap versus its own past.
+
+    The percentile uses only observations through the decision date. A low percentile
+    means the published valuation is expensive.
+    """
+    earnings_yield = 1.0 / peg.astype(float).replace(0, np.nan)
+    percentile = earnings_yield.rolling(lookback).apply(_last_percent_rank, raw=True)
+    capped = scale.astype(float).copy()
+    expensive = percentile.notna() & percentile.lt(expensive_percentile)
+    capped.loc[expensive] = np.minimum(capped.loc[expensive].to_numpy(dtype=float), float(scale_cap))
+    return capped
+
+
+def _last_percent_rank(values: np.ndarray) -> float:
+    if np.isnan(values).any():
+        return float("nan")
+    return float(pd.Series(values).rank(pct=True).iloc[-1])

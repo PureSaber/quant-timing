@@ -4,9 +4,9 @@ import pandas as pd
 import pytest
 
 from quant_timing.book import simulate
-from quant_timing.constraints import constrain_scale
+from quant_timing.constraints import apply_earnings_yield_cap, constrain_scale
 from quant_timing.macro_history import apply_macro_history
-from quant_timing.overlay import apply_futures_overlay, cash_returns_from_yield
+from quant_timing.overlay import apply_futures_overlay
 from quant_timing.position_models import build_position
 from quant_timing.style import style_internal_weights
 
@@ -73,25 +73,39 @@ def test_drawdown_line_cuts_exposure_after_the_loss_is_known() -> None:
     assert limited.iloc[-1] == pytest.approx(0.2)
 
 
-def test_futures_overlay_sets_net_beta_and_cash_earns_a_yield() -> None:
+def test_futures_overlay_does_not_create_cash_from_a_short() -> None:
     index = pd.to_datetime(["2024-01-02", "2024-01-03"])
     prices = pd.DataFrame({"market": [100.0, 110.0]}, index=index)
     weights = pd.DataFrame({"market": [1.0, 1.0], "CASH": [0.0, 0.0]}, index=index)
     scale = pd.Series([0.0, 0.0], index=index)
     hedged = apply_futures_overlay(weights, scale, margin_rate=0.0)
-    assert hedged.sum(axis=1).iloc[-1] == pytest.approx(1.0)
-    assert hedged["FUTURES"].iloc[-1] == pytest.approx(-1.0)
-    cash = cash_returns_from_yield(index, pd.Series([0.0, 0.252], index=index))
+    funded = [column for column in hedged.columns if column not in {"IF", "IC", "IM"}]
+    assert hedged[funded].sum(axis=1).iloc[-1] == pytest.approx(1.0)
+    assert hedged["IF"].iloc[-1] == pytest.approx(-1.0)
+    assert hedged["CASH"].iloc[-1] == pytest.approx(0.0)
     realized = simulate(
         hedged,
         hedged,
         prices,
         "market",
         0.0,
-        cash,
-        extra_returns={"FUTURES": prices["market"].pct_change()},
+        extra_returns={"IF": prices["market"].pct_change()},
     )
-    assert realized["gross_return"].iloc[-1] == pytest.approx(0.001)
+    assert realized["gross_return"].iloc[-1] == pytest.approx(0.0)
+
+
+def test_small_cap_sleeve_is_hedged_with_im_when_it_is_listed() -> None:
+    index = pd.to_datetime(["2024-01-02", "2024-01-03"])
+    weights = pd.DataFrame({"csi1000": [1.0, 1.0], "CASH": [0.0, 0.0]}, index=index)
+    scale = pd.Series([0.0, 0.0], index=index)
+    listed = pd.DataFrame({"IF": True, "IC": True, "IM": True}, index=index)
+    hedged = apply_futures_overlay(weights, scale, margin_rate=0.0, available=listed)
+    assert hedged["IM"].iloc[-1] == pytest.approx(-1.0)
+    assert hedged["IF"].iloc[-1] == pytest.approx(0.0)
+    missing = pd.DataFrame({"IF": True, "IC": False, "IM": False}, index=index)
+    fallback = apply_futures_overlay(weights, scale, margin_rate=0.0, available=missing)
+    assert fallback["IF"].iloc[-1] == pytest.approx(-1.0)
+    assert fallback["IM"].iloc[-1] == pytest.approx(0.0)
 
 
 def test_macro_history_does_not_use_a_later_release() -> None:
@@ -167,3 +181,105 @@ def test_impact_cost_grows_faster_than_turnover() -> None:
     small_cost = simulate(small, small, prices, "market", 0.0, impact_coef=0.2)["cost"].iloc[2]
     large_cost = simulate(large, large, prices, "market", 0.0, impact_coef=0.2)["cost"].iloc[2]
     assert large_cost / small_cost > 2.0
+
+
+def test_revision_signal_overweights_the_positive_side() -> None:
+    index = pd.to_datetime(["2024-01-02", "2024-01-03"])
+    prices = pd.DataFrame({"value": [10.0, 10.0], "growth": [10.0, 10.0]}, index=index)
+    signals = pd.DataFrame({"revision": [pd.NA, 0.05]}, index=index)
+    weights = style_internal_weights(
+        prices,
+        {
+            "return_window": 1,
+            "tilt": 0.8,
+            "threshold": 0.0,
+            "pairs": [
+                {
+                    "name": "revision",
+                    "left": "value",
+                    "right": "growth",
+                    "group_weight": 1.0,
+                    "signal": "revision",
+                    "signal_column": "revision",
+                }
+            ],
+        },
+        signals,
+    )
+    assert weights.loc[index[1], "value"] == pytest.approx(0.8)
+
+
+def test_industry_valuation_spread_prefers_the_cheaper_sleeve() -> None:
+    index = pd.to_datetime(["2024-01-02", "2024-01-03"])
+    prices = pd.DataFrame({"bank": [10.0, 10.0], "pharma": [10.0, 10.0]}, index=index)
+    signals = pd.DataFrame(
+        {"industry.bank": [10.0, 10.0], "industry.pharma": [30.0, 30.0]},
+        index=index,
+    )
+    weights = style_internal_weights(
+        prices,
+        {
+            "return_window": 1,
+            "tilt": 0.8,
+            "threshold": 0.0,
+            "groups": [
+                {
+                    "name": "industry",
+                    "members": ["bank", "pharma"],
+                    "group_weight": 1.0,
+                    "signal": "valuation_spread",
+                }
+            ],
+        },
+        signals,
+    )
+    assert weights.loc[index[1], "bank"] > weights.loc[index[1], "pharma"]
+
+
+def test_amount_share_benchmark_caps_active_weight() -> None:
+    index = pd.bdate_range("2024-01-01", periods=5)
+    prices = pd.DataFrame({"bank": 10.0, "pharma": 10.0}, index=index)
+    signals = pd.DataFrame({"industry.bank": 10.0, "industry.pharma": 10.0}, index=index)
+    amounts = pd.DataFrame({"bank": 90.0, "pharma": 10.0}, index=index)
+    weights = style_internal_weights(
+        prices,
+        {
+            "return_window": 1,
+            "tilt": 0.8,
+            "threshold": 0.0,
+            "groups": [
+                {
+                    "name": "industry",
+                    "members": ["bank", "pharma"],
+                    "group_weight": 1.0,
+                    "signal": "valuation_spread",
+                    "benchmark": "amount_share",
+                    "amount_window": 3,
+                    "max_active_deviation": 0.02,
+                }
+            ],
+        },
+        signals,
+        amounts,
+    )
+    assert abs(weights["bank"].iloc[-1] - 0.9) <= 0.02 + 1e-8
+
+
+def test_adv_impact_uses_participation_and_reports_a_different_cost() -> None:
+    index = pd.bdate_range("2024-01-01", periods=3)
+    prices = pd.DataFrame({"market": [100.0, 100.0, 100.0]}, index=index)
+    weights = pd.DataFrame({"market": [1.0, 0.5, 0.5], "CASH": [0.0, 0.5, 0.5]}, index=index)
+    adv = pd.Series(100.0, index=index)
+    cost = simulate(weights, weights, prices, "market", 0.0, impact_coef=0.2, adv=adv, capital=50.0)
+    assert cost["cost"].iloc[2] == pytest.approx(0.05)
+
+
+def test_earnings_yield_cap_uses_only_past_valuations() -> None:
+    index = pd.bdate_range("2024-01-01", periods=6)
+    peg = pd.Series([10.0, 10.0, 10.0, 10.0, 10.0, 40.0], index=index)
+    scale = pd.Series(1.0, index=index)
+    capped = apply_earnings_yield_cap(
+        scale, peg, lookback=5, expensive_percentile=0.3, scale_cap=0.6
+    )
+    assert capped.iloc[-2] == pytest.approx(1.0)
+    assert capped.iloc[-1] == pytest.approx(0.6)
