@@ -1,0 +1,238 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+import yaml
+
+from quant_timing import __version__
+from quant_timing.contract import write_standard_run
+from quant_timing.study import StudyResult
+
+STRATEGY = "timing"
+
+
+def gate_decision(latest: dict[str, Any], summary: dict[str, Any]) -> dict[str, Any]:
+    """Hold back a consumable scale unless the causal audit and a scored fold both passed."""
+    decision = {
+        "as_of": latest["as_of"],
+        "regime": latest["regime"],
+        "model_position_scale": latest["model_position_scale"],
+        "position_scale": latest["position_scale"],
+        "action": latest["action"],
+        "research_only": True,
+        "signals": dict(latest["signals"]),
+    }
+    if not summary["leakage_passed"]:
+        decision["action"] = "blocked"
+        decision["position_scale"] = None
+        decision["signals"]["block_reason"] = "leakage"
+        return decision
+    if summary["scored_folds"] < 1 and decision["action"] == "use":
+        decision["action"] = "blocked"
+        decision["position_scale"] = None
+        decision["signals"]["block_reason"] = "insufficient_history"
+    return decision
+
+
+def exit_code(summary: dict[str, Any], decision: dict[str, Any]) -> int:
+    if not summary["leakage_passed"]:
+        return 1
+    if summary["scored_folds"] < 1 or decision["action"] == "blocked":
+        return 2
+    return 0
+
+
+def write_run(result: StudyResult, prices: pd.DataFrame, out_dir: Path) -> dict[str, Any]:
+    decision = gate_decision(result.latest, result.summary)
+    standard_dir = out_dir / "standard"
+    if standard_dir.exists():
+        raise FileExistsError(f"standard run already exists: {standard_dir}")
+    if decision["action"] != "use" and (out_dir / "position_scale.json").exists():
+        raise FileExistsError("refusing to leave a stale position_scale.json beside a blocked decision")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    validation = out_dir / "validation"
+    validation.mkdir(exist_ok=True)
+    result.folds.to_csv(validation / "fold_metrics.csv", index=False)
+    _write_json(validation / "summary.json", result.summary)
+    _write_json(validation / "leakage_audit.json", result.leakage)
+    _write_frame(out_dir / "position_history.csv", result.position)
+    _write_frame(out_dir / "style_weights.csv", result.weights)
+    _write_json(out_dir / "decision.json", decision)
+    if decision["action"] == "use":
+        _write_json(out_dir / "position_scale.json", _paper_sim_payload(decision))
+        _write_overlay(out_dir / "portfolio_overlay.yaml", decision)
+    metrics = _metrics(result, decision)
+    write_standard_run(
+        out_dir,
+        project="quant-timing",
+        run_id=str(result.config["run_id"]),
+        strategy="position_and_style" if result.config["style"] else "position_only",
+        frames=_standard_frames(result, prices),
+        metrics=metrics,
+        config=result.raw_config,
+        code_version=__version__,
+        dataset_snapshots={"prices": _prices_sha256(prices)},
+        tags={
+            "orders": "research_target_not_routed",
+            "asset_class": "index_style",
+            "acceptance": "walk_forward_folds",
+        },
+    )
+    return decision
+
+
+def _paper_sim_payload(decision: dict[str, Any]) -> dict[str, Any]:
+    scale = decision["position_scale"]
+    if not isinstance(scale, (int, float)) or isinstance(scale, bool):
+        raise ValueError("paper-sim export requires a numeric position_scale")
+    return {
+        "as_of": decision["as_of"],
+        "regime": decision["regime"],
+        "position_scale": float(scale),
+        "research_only": True,
+        "signals": decision["signals"],
+    }
+
+
+def _write_overlay(path: Path, decision: dict[str, Any]) -> None:
+    payload = {
+        "as_of": decision["as_of"],
+        "position_scale": decision["position_scale"],
+        "usage": "把 position_scale 抄到已有 quant-portfolio 策略条目上，不修改组合库接口。",
+    }
+    path.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
+def _metrics(result: StudyResult, decision: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(result.summary)
+    payload["export_action"] = decision["action"]
+    payload["export_position_scale"] = decision["position_scale"]
+    return payload
+
+
+def _standard_frames(result: StudyResult, prices: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    nav = result.realized["nav"]
+    returns_rows = []
+    position_rows = []
+    order_rows = []
+    cost_rows = []
+    exposure_rows = []
+    previous_nav = nav.shift(1)
+    held = result.weights.shift(1)
+    held_scale = result.position["position_scale"].shift(1)
+    for stamp, weight_row in held.iterrows():
+        if weight_row.isna().any():
+            continue
+        day = _day(stamp)
+        nav_value = float(nav.loc[stamp])
+        for symbol, weight in weight_row.items():
+            weight_value = float(weight)
+            price = 1.0 if symbol == "CASH" else float(prices.loc[stamp, symbol])
+            market_value = weight_value * nav_value
+            position_rows.append(
+                {
+                    "date": day,
+                    "strategy": STRATEGY,
+                    "symbol": symbol,
+                    "quantity": market_value / price,
+                    "market_value": market_value,
+                    "weight": weight_value,
+                    "side": "long" if weight_value > 1e-12 else "flat",
+                }
+            )
+            exposure_rows.append(
+                {
+                    "date": day,
+                    "strategy": STRATEGY,
+                    "exposure_type": "allocation",
+                    "name": symbol,
+                    "value": weight_value,
+                }
+            )
+        exposure_rows.append(
+            {
+                "date": day,
+                "strategy": STRATEGY,
+                "exposure_type": "gross",
+                "name": "equity",
+                "value": float(held_scale.loc[stamp]),
+            }
+        )
+        realized = result.realized.loc[stamp]
+        if pd.notna(realized["net_return"]):
+            returns_rows.append(
+                {
+                    "date": day,
+                    "strategy": STRATEGY,
+                    "gross_return": float(realized["gross_return"]),
+                    "net_return": float(realized["net_return"]),
+                    "nav": nav_value,
+                    "benchmark_return": float(realized["benchmark_return"]),
+                }
+            )
+        start_nav = float(previous_nav.loc[stamp]) if pd.notna(previous_nav.loc[stamp]) else nav_value
+        fraction = 0.0 if pd.isna(realized["cost"]) else float(realized["cost"])
+        money = fraction * start_nav
+        cost_rows.append(
+            {
+                "date": day,
+                "strategy": STRATEGY,
+                "symbol": "BOOK",
+                "commission": 0.0,
+                "slippage": money,
+                "market_impact": 0.0,
+                "borrow_cost": 0.0,
+                "total_cost": money,
+            }
+        )
+    for loc in range(1, len(result.weights)):
+        stamp = result.weights.index[loc]
+        delta = result.weights.iloc[loc] - result.weights.iloc[loc - 1]
+        nav_value = float(nav.loc[stamp])
+        for symbol, change in delta.items():
+            change_value = float(change)
+            if abs(change_value) <= 1e-12:
+                continue
+            price = 1.0 if symbol == "CASH" else float(prices.loc[stamp, symbol])
+            order_rows.append(
+                {
+                    "timestamp": _day(stamp),
+                    "strategy": STRATEGY,
+                    "symbol": symbol,
+                    "side": "buy" if change_value > 0 else "sell",
+                    "quantity": abs(change_value) * nav_value / price,
+                    "target_weight": float(result.weights.iloc[loc][symbol]),
+                    "order_type": "market",
+                    "status": "target",
+                }
+            )
+    return {
+        "returns": pd.DataFrame(returns_rows),
+        "positions": pd.DataFrame(position_rows),
+        "orders": pd.DataFrame(order_rows),
+        "costs": pd.DataFrame(cost_rows),
+        "exposures": pd.DataFrame(exposure_rows),
+    }
+
+
+def _prices_sha256(prices: pd.DataFrame) -> str:
+    payload = prices.to_csv(date_format="%Y-%m-%d").encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _write_frame(path: Path, frame: pd.DataFrame) -> None:
+    output = frame.copy()
+    output.insert(0, "date", [_day(value) for value in output.index])
+    output.to_csv(path, index=False)
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _day(value: object) -> str:
+    return pd.Timestamp(value).strftime("%Y-%m-%d")
