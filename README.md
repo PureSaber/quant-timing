@@ -52,6 +52,17 @@ flowchart LR
 
 下游接入时不改它们的接口。模拟配置继续指向一个含 `position_scale` 的 JSON。组合配置继续在策略条目上填写 `position_scale`。
 
+仓位模型可以是原来的三档规则，也可以是波动率目标、时间序列动量或均线趋势。风格可以按动量、估值差、盈利修正或拥挤度倾斜，并限制相对等权的偏离。现金可以用收益率或债券价格的涨跌，股票预算也可以用股指期货调到目标 beta。单日调仓幅度和回撤线在决策前生效。冲击成本和固定费用一起扣在下一根 K 线上。
+
+真实指数对照：
+
+```powershell
+python tools/fetch_public_indices.py
+python -m quant_timing compare --config configs/market_comparison.yaml --out studies/market_comparison
+```
+
+这次公开样本上的四条仓位模型，扣费后的走步折平均超额都低于沪深 300。结果写在 `studies/market_comparison/model_comparison.csv`。它是一次对照，不是收益承诺。数据口径见 `data/public/SOURCE.md`。
+
 外部 regime 有两种读法，不能同时用：
 
 - `regime.snapshot`：只封顶最新一次发布，不回放成历史。

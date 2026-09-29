@@ -8,8 +8,11 @@ import pandas as pd
 
 from quant_timing.book import assemble_weights, simulate
 from quant_timing.config import resolve_config
+from quant_timing.constraints import constrain_scale, full_equity_return
+from quant_timing.macro_history import apply_macro_history
 from quant_timing.macro_policy import apply_macro, normalize_macro
-from quant_timing.position import position_history
+from quant_timing.overlay import apply_futures_overlay, cash_returns_from_yield
+from quant_timing.position_models import build_position
 from quant_timing.style import style_internal_weights, style_sleeves
 from quant_timing.walkforward import iter_folds, score_folds
 
@@ -37,23 +40,69 @@ def run_study(
     regime_history: pd.Series | None = None,
     regime_snapshot: float | None = None,
     macro: dict | None = None,
+    signal_panel: pd.DataFrame | None = None,
+    macro_history: pd.DataFrame | None = None,
+    cash_yield: pd.Series | None = None,
+    futures_price: pd.Series | None = None,
     audit: bool = True,
 ) -> StudyResult:
     config = resolve_config(raw_config)
     _require_columns(prices, config)
     external, snapshot = _external_scales(config, regime_history, regime_snapshot)
     context = normalize_macro(macro)
-    position = position_history(prices[config["market"]], config["position"], external)
+    position = build_position(prices[config["market"]], config["position"], external)
+    position["position_scale"] = apply_macro_history(
+        position["position_scale"], macro_history, config["macro"]
+    )
     style = config["style"]
-    internal = style_internal_weights(prices, style) if style else None
+    internal = style_internal_weights(prices, style, signal_panel) if style else None
+    cash_returns = _cash_returns(prices.index, config, cash_yield)
+    constraints = config["constraints"]
+    if constraints["max_daily_change"] is not None or constraints["drawdown_line"] is not None:
+        position["position_scale"] = constrain_scale(
+            position["position_scale"],
+            full_equity_return(prices, config["market"], internal),
+            cash_returns.fillna(0.0),
+            max_daily_change=constraints["max_daily_change"],
+            drawdown_line=constraints["drawdown_line"],
+            drawdown_floor=float(constraints["drawdown_floor"]),
+        )
     weights, matched = assemble_weights(prices, position, style, internal, config["market"])
-    realized = simulate(weights, matched, prices, config["market"], float(config["costs_bps"]))
+    extra_returns = None
+    if config["overlay"]["mode"] == "futures":
+        if futures_price is None:
+            raise ValueError("futures price was not loaded")
+        margin = float(config["overlay"]["margin_rate"])
+        weights = apply_futures_overlay(weights, position["position_scale"], margin_rate=margin)
+        matched = apply_futures_overlay(matched, position["position_scale"], margin_rate=margin)
+        extra_returns = {"FUTURES": futures_price.astype(float).pct_change()}
+    realized = simulate(
+        weights,
+        matched,
+        prices,
+        config["market"],
+        float(config["costs_bps"]),
+        None if config["cash"]["mode"] == "zero" else cash_returns,
+        float(config["impact_coef"]),
+        extra_returns,
+    )
     folds = score_folds(
         realized,
         iter_folds(prices.index, **config["validation"]),
     )
     leakage = (
-        _audit(prices, raw_config, regime_history, snapshot, position, weights)
+        _audit(
+            prices,
+            raw_config,
+            regime_history,
+            snapshot,
+            position,
+            weights,
+            signal_panel=signal_panel,
+            macro_history=macro_history,
+            cash_yield=cash_yield,
+            futures_price=futures_price,
+        )
         if audit
         else {"passed": False, "reason": "not_run", "checks": []}
     )
@@ -166,6 +215,17 @@ def _summary(folds: pd.DataFrame, realized: pd.DataFrame, leakage: dict[str, Any
     }
 
 
+def _cash_returns(index: pd.Index, config: dict[str, Any], cash_yield: pd.Series | None) -> pd.Series:
+    mode = config["cash"]["mode"]
+    if mode == "zero":
+        return pd.Series(0.0, index=index)
+    if cash_yield is None:
+        raise ValueError("cash yield series was not loaded")
+    if mode == "yield":
+        return cash_returns_from_yield(index, cash_yield, int(config["cash"]["daycount"]))
+    return cash_yield.reindex(index).fillna(0.0)
+
+
 def _audit(
     prices: pd.DataFrame,
     raw_config: dict[str, Any],
@@ -173,6 +233,11 @@ def _audit(
     regime_snapshot: float | None,
     position: pd.DataFrame,
     weights: pd.DataFrame,
+    *,
+    signal_panel: pd.DataFrame | None,
+    macro_history: pd.DataFrame | None,
+    cash_yield: pd.Series | None,
+    futures_price: pd.Series | None,
 ) -> dict[str, Any]:
     candidates = list(prices.index[:-1])
     if len(candidates) < 2:
@@ -185,6 +250,10 @@ def _audit(
             raw_config,
             regime_history=regime_history,
             regime_snapshot=regime_snapshot,
+            signal_panel=signal_panel,
+            macro_history=macro_history,
+            cash_yield=cash_yield,
+            futures_price=futures_price,
             audit=False,
         )
         scale_diff = abs(
