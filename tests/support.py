@@ -1,0 +1,40 @@
+from __future__ import annotations
+
+from quant_timing.synthetic import synthetic_prices
+
+
+def timing_config() -> dict:
+    return {
+        "market": "market",
+        "run_id": "test",
+        "position": {
+            "vol_window": 20,
+            "vol_lookback": 60,
+            "vol_percentile_threshold": 0.8,
+            "return_window": 20,
+            "risk_off_return": -0.05,
+            "high_vol_scale": 0.5,
+            "risk_off_scale": 0.3,
+            "risk_on_scale": 1.0,
+        },
+        "costs": {"bps": 10},
+        "validation": {
+            "train_size": 120,
+            "test_size": 40,
+            "step_size": 40,
+            "embargo": 5,
+        },
+        "style": {
+            "return_window": 20,
+            "tilt": 0.7,
+            "threshold": 0.0,
+            "pairs": [
+                {"name": "size", "left": "small", "right": "large", "group_weight": 0.5},
+                {"name": "value_growth", "left": "value", "right": "growth", "group_weight": 0.5},
+            ],
+        },
+    }
+
+
+def sample_prices():
+    return synthetic_prices()
