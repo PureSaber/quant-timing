@@ -2,15 +2,24 @@
   "scope": "fixed-historical-input-regression-replay-not-new-holdout",
   "code_commit": "36ec2309f0beed5773a78a64f1fd1990b6fa3f08",
   "input_sha256": {
+    "configs/market_comparison.yaml": "d3386e68c94bfa656496a3cefdab34d11a873f876858d31cbe33e221ae94226d",
+    "data/public/indices.csv": "2e4dbd54e478c9d62bdc41b3e58e126c5c13dcb0f0c0cb5ae8510239c7876430",
+    "data/public/amounts.csv": "ed95eb28c1eb54f1efb8c02d4cfdc85f2ddee66e9c92d5b4967543f9a237369c",
+    "data/public/signals.csv": "6c95c2914908e421beb4f056c26c3fe281641a39d257711c1bcdc9c35bf4d691",
+    "data/public/futures.csv": "aab4f3918f52d8cc242cab8709c79bec54ad641f69bde69ed382bac8bf9a189f"
+  },
+  "result_sha256": "68e8a54490bf2904dba1bd8ad8184886caa201209364610627943961dd176f59",
+  "row_count": 12,
+  "all_complete": true,
+  "all_leakage_passed": true,
+  "folds_per_row": 10,
+  "execution_input_sha256": {
     "data/public/indices.csv": "dbc38b74cd5d929244a8fc07c32e99da42a208143a3da6d879ec81e3f443c3bd",
     "data/public/futures.csv": "7afafec10c77abd38569533ed118dbae634ac186efc8b1b598eca803a1075b8a",
     "configs/market_comparison.yaml": "7a7145686b1ae8dfc5005d9fd8cbc2ebafbbc95a50c5c54beacf142a1ad72229",
     "data/public/signals.csv": "2162e90e631bcb6a6e69f31af7d4bd84291af9e3c067cb651c0d969c3c4a9d18",
     "data/public/amounts.csv": "3f1981afb3801f30d3c0ee6412c95d2ab05e0c931030e1164173ef5530975e19"
   },
-  "result_sha256": "92654955014ea3fb91a8deceeabcb5a0ac5ce9ce1938aac716d650d8f520d11f",
-  "row_count": 12,
-  "all_complete": true,
-  "all_leakage_passed": true,
-  "folds_per_row": 10
+  "execution_result_sha256": "92654955014ea3fb91a8deceeabcb5a0ac5ce9ce1938aac716d650d8f520d11f",
+  "hash_method": "input_sha256/result_sha256: UTF-8 text without BOM, CRLF/CR normalized to LF; execution_*: actual bytes consumed/produced"
 }
