@@ -48,13 +48,14 @@ def full_equity_return(
     market: str,
     internal: pd.DataFrame | None,
 ) -> pd.Series:
-    """Return of a fully invested sleeve mix. The position scale is applied later."""
+    """Return earned by the previous decision's sleeve mix, before position scaling."""
     returns = prices.pct_change()
     if internal is None:
         return returns[market]
     sleeves = list(internal.columns)
-    mix = (internal.fillna(0.0) * returns[sleeves]).sum(axis=1, min_count=len(sleeves))
-    ready = internal.notna().all(axis=1)
+    held = internal.shift(1)
+    mix = (held.fillna(0.0) * returns[sleeves]).sum(axis=1, min_count=len(sleeves))
+    ready = held.notna().all(axis=1)
     equity = returns[market].copy()
     equity.loc[ready] = mix.loc[ready]
     return equity
@@ -77,7 +78,9 @@ def apply_earnings_yield_cap(
     percentile = earnings_yield.rolling(lookback).apply(_last_percent_rank, raw=True)
     capped = scale.astype(float).copy()
     expensive = percentile.notna() & percentile.lt(expensive_percentile)
-    capped.loc[expensive] = np.minimum(capped.loc[expensive].to_numpy(dtype=float), float(scale_cap))
+    capped.loc[expensive] = np.minimum(
+        capped.loc[expensive].to_numpy(dtype=float), float(scale_cap)
+    )
     return capped
 
 

@@ -35,6 +35,7 @@ class StudyResult:
     summary: dict[str, Any]
     leakage: dict[str, Any]
     latest: dict[str, Any]
+    valuation_prices: pd.DataFrame
 
 
 def run_study(
@@ -86,10 +87,13 @@ def run_study(
             drawdown_floor=float(constraints["drawdown_floor"]),
         )
     weights, matched = assemble_weights(prices, position, style, internal, config["market"])
+    valuation_prices = prices.copy()
     extra_returns = None
     overlay = config["overlay"]
     if overlay["mode"] == "futures":
         futures = _futures_frame(futures_prices, futures_price, prices.index, overlay["contracts"])
+        for name in futures.columns:
+            valuation_prices[name] = futures[name]
         betas, fallback, available = _hedge_inputs(
             prices, futures, list(weights.columns), int(overlay["beta_window"])
         )
@@ -167,6 +171,7 @@ def run_study(
         summary=summary,
         leakage=leakage,
         latest=latest,
+        valuation_prices=valuation_prices,
     )
 
 
