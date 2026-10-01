@@ -63,7 +63,7 @@ python tools/fetch_public_indices.py --futures-only --offline
 python -m quant_timing compare --config configs/market_comparison.yaml --out studies/market_comparison
 ```
 
-修正后的十二组公开对照保存在 `studies/market_comparison/model_comparison.csv`，所有模型统一从 2019-03-08 开始。期货序列可由已提交的单合约收盘价和独立交易日历离线重建，上市前及数据覆盖前不会生成价格。公开成交量只用于行业相对权重，不推算人民币容量；表中的容量及参与率保持空值。旧版对照数字已替换，完整数据口径见 `data/public/SOURCE.md`。这些固定参数下的研究结果不构成收益承诺。
+账本修复后的十二组公开对照见[2026-10-01回归重放](studies/market_comparison/2026-10-01-regression/README.md)，原表保留为历史结果。所有模型统一从2019-03-08开始，使用同一份截至2026-09-28的既有快照；这次重放不是新增样本外证据。期货序列可由已提交的单合约收盘价和独立交易日历离线重建，上市前及数据覆盖前不会生成价格。公开成交量只用于行业相对权重，不推算人民币容量；容量及参与率保持空值。完整数据口径见`data/public/SOURCE.md`。这些固定参数下的研究结果不构成收益承诺。
 
 外部 regime 有两种读法，不能同时用：
 
