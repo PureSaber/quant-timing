@@ -30,7 +30,9 @@ def test_explicit_rule_can_only_cap_scale() -> None:
 
 
 def test_incomplete_macro_requires_a_policy_and_never_zero_fills() -> None:
-    context = normalize_macro({"complete": False, "unavailable": {"CPI": "missing_or_stale"}, "values": {}})
+    context = normalize_macro(
+        {"complete": False, "unavailable": {"CPI": "missing_or_stale"}, "values": {}}
+    )
     with pytest.raises(ValueError, match="incomplete_policy"):
         apply_macro(1.0, context, {"incomplete_policy": None, "rules": []})
     scale, policy = apply_macro(

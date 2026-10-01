@@ -39,6 +39,8 @@ python -m ruff check src tests
 | `validation/` | 走步折、泄漏审计和摘要。全样本收益只作描述。 |
 | `standard/` | 与研究运行契约一致的收益、持仓、目标订单、成本和暴露。 |
 
+持仓文件记录收盘调仓前的实际数量、金额和权重，`return_weight`用于上一笔决策的收益归因。期货和保证金使用各自的估值定义。所有产物验证成功后整体发布；导出失败不会提前发布仓位文件，非空输出目录拒绝覆盖。
+
 ```mermaid
 flowchart LR
   prices[指数与风格价格] --> study[quant-timing]

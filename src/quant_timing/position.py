@@ -18,7 +18,9 @@ def _finite(value: object) -> float:
     return number
 
 
-def classify_position(vol_percentile: object, window_return: object, rules: dict) -> tuple[str, float]:
+def classify_position(
+    vol_percentile: object, window_return: object, rules: dict
+) -> tuple[str, float]:
     """Map features known on the decision date to a long-only scale.
 
     High volatility takes priority over a negative window return. Incomplete features stay in

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from quant_timing.style import style_sleeves
@@ -88,8 +89,8 @@ def simulate(
         asset[name] = series.reindex(asset.index)
     if "MARGIN" in weights.columns:
         asset["MARGIN"] = 0.0
-    gross, net, cost, turnover = _path(weights, asset, cost_bps, impact_coef, adv, capital)
-    matched_gross, matched_net, matched_cost, matched_turnover = _path(
+    gross, net, cost, turnover, trades = _path(weights, asset, cost_bps, impact_coef, adv, capital)
+    matched_gross, matched_net, matched_cost, matched_turnover, _ = _path(
         matched, asset, cost_bps, impact_coef, adv, capital
     )
     frame = pd.DataFrame(
@@ -107,9 +108,10 @@ def simulate(
         },
         index=weights.index,
     )
-    frame.index.name = "date"
+    frame.index = frame.index.rename("date")
     frame["nav"] = _nav(frame["net_return"])
-    return frame
+    # Decision-date deltas are also the source for research order exports.
+    return pd.concat([frame, trades.rename_axis("date").add_prefix("trade:")], axis=1)
 
 
 def _path(
@@ -119,7 +121,7 @@ def _path(
     impact_coef: float = 0.0,
     adv: pd.Series | None = None,
     capital: float | None = None,
-) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series]:
+) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.DataFrame]:
     columns = list(weights.columns)
     returns = asset.reindex(columns=columns)
     if "CASH" in returns.columns:
@@ -135,13 +137,42 @@ def _path(
             raise ValueError(f"missing futures return while holding {column}")
         gross_parts.loc[idle, column] = gross_parts.loc[idle, column].fillna(0.0)
     gross = gross_parts.sum(axis=1, min_count=len(columns))
-    traded = weights.diff().abs().sum(axis=1) / 2.0
-    traded.iloc[0] = 0.0
-    turnover = traded.shift(1)
-    cost = turnover * (cost_bps / 10_000.0)
-    if impact_coef:
-        cost = cost + _impact(turnover, float(impact_coef), adv, capital)
-    return gross, gross - cost, cost, turnover
+    targets = weights.to_numpy(dtype=float)
+    parts = gross_parts.to_numpy(dtype=float)
+    trades = np.zeros_like(targets)
+    turnover = np.full(len(weights), np.nan)
+    cost = np.full(len(weights), np.nan)
+    unit_impact = (
+        _impact(pd.Series(1.0, index=weights.index), float(impact_coef), adv, capital).to_numpy(
+            dtype=float, na_value=np.nan
+        )
+        if impact_coef
+        else np.zeros(len(weights))
+    )
+    cash_loc = columns.index("CASH") if "CASH" in columns else None
+    futures_locs = [columns.index(name) for name in columns if name in _FUTURES_COLUMNS]
+    for loc in range(1, len(weights)):
+        turnover[loc] = np.abs(trades[loc - 1]).sum() / 2.0
+        cost[loc] = turnover[loc] * (cost_bps / 10_000.0)
+        if turnover[loc] > 0:
+            cost[loc] += unit_impact[loc] * turnover[loc] ** 1.5
+        growth = 1.0 + float(gross.iloc[loc]) - cost[loc]
+        if not np.isfinite(growth) or growth <= 0:
+            raise ValueError("cannot rebalance a book with non-positive or non-finite NAV")
+        before = targets[loc - 1] + parts[loc]
+        # Futures are notionals; variation margin is cash, not funded principal.
+        cash_flow = parts[loc, futures_locs].sum() - cost[loc]
+        if cash_loc is not None:
+            before[cash_loc] += cash_flow
+        trades[loc] = targets[loc] - before / growth
+    cost_series = pd.Series(cost, index=weights.index)
+    return (
+        gross,
+        gross - cost_series,
+        cost_series,
+        pd.Series(turnover, index=weights.index),
+        pd.DataFrame(trades, index=weights.index, columns=columns),
+    )
 
 
 def _impact(

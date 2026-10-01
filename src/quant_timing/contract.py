@@ -125,7 +125,9 @@ def write_standard_run(
         if list(frame.columns)[: len(columns)] != list(columns):
             raise ValueError(f"artifact columns drifted: {name}")
     metrics_path = standard_dir / "metrics.json"
-    metrics_path.write_text(json.dumps(metrics, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    metrics_path.write_text(
+        json.dumps(metrics, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
     records.append(
         ArtifactRecord(
             name="metrics",

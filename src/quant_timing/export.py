@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import pandas as pd
 import yaml
 
 from quant_timing import __version__
-from quant_timing.contract import write_standard_run
+from quant_timing.contract import validate_standard_run, write_standard_run
+from quant_timing.overlay import FUTURES_COLUMNS
 from quant_timing.study import StudyResult
 
 STRATEGY = "timing"
@@ -47,12 +50,27 @@ def exit_code(summary: dict[str, Any], decision: dict[str, Any]) -> int:
 
 
 def write_run(result: StudyResult, prices: pd.DataFrame, out_dir: Path) -> dict[str, Any]:
+    """Validate a complete staged run, then publish it with one directory rename."""
+    out_dir = Path(out_dir)
+    _require_empty_destination(out_dir)
+    out_dir.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix=f".{out_dir.name}-", dir=out_dir.parent) as directory:
+        staged = Path(directory)
+        decision = _write_staged_run(result, prices, staged)
+        _require_empty_destination(out_dir)
+        if out_dir.exists():
+            out_dir.rmdir()  # Removes only an empty destination; never existing run contents.
+        staged.rename(out_dir)
+    return decision
+
+
+def _require_empty_destination(path: Path) -> None:
+    if path.exists() and (not path.is_dir() or any(path.iterdir())):
+        raise FileExistsError(f"refusing to overwrite a nonempty run destination: {path}")
+
+
+def _write_staged_run(result: StudyResult, prices: pd.DataFrame, out_dir: Path) -> dict[str, Any]:
     decision = gate_decision(result.latest, result.summary)
-    standard_dir = out_dir / "standard"
-    if standard_dir.exists():
-        raise FileExistsError(f"standard run already exists: {standard_dir}")
-    if decision["action"] != "use" and (out_dir / "position_scale.json").exists():
-        raise FileExistsError("refusing to leave a stale position_scale.json beside a blocked decision")
     out_dir.mkdir(parents=True, exist_ok=True)
     validation = out_dir / "validation"
     validation.mkdir(exist_ok=True)
@@ -61,27 +79,35 @@ def write_run(result: StudyResult, prices: pd.DataFrame, out_dir: Path) -> dict[
     _write_json(validation / "leakage_audit.json", result.leakage)
     _write_frame(out_dir / "position_history.csv", result.position)
     _write_frame(out_dir / "style_weights.csv", result.weights)
-    _write_json(out_dir / "decision.json", decision)
-    if decision["action"] == "use":
-        _write_json(out_dir / "position_scale.json", _paper_sim_payload(decision))
-        _write_overlay(out_dir / "portfolio_overlay.yaml", decision)
     metrics = _metrics(result, decision)
     write_standard_run(
         out_dir,
         project="quant-timing",
         run_id=str(result.config["run_id"]),
         strategy="position_and_style" if result.config["style"] else "position_only",
-        frames=_standard_frames(result, prices),
+        frames=_standard_frames(result, result.valuation_prices),
         metrics=metrics,
         config=result.raw_config,
         code_version=__version__,
-        dataset_snapshots={"prices": _prices_sha256(prices)},
+        dataset_snapshots={
+            "prices": _prices_sha256(prices),
+            "valuation_prices": _prices_sha256(result.valuation_prices),
+        },
         tags={
             "orders": "research_target_not_routed",
             "asset_class": "index_style",
             "acceptance": "walk_forward_folds",
+            "positions": "close_pretrade_after_costs",
+            "position_return_weight": "previous_decision_weight_for_return_attribution",
+            "cost_unit": "currency",
+            "futures_market_value": "signed_notional_excluded_from_funded_nav",
         },
     )
+    validate_standard_run(out_dir)
+    _write_json(out_dir / "decision.json", decision)
+    if decision["action"] == "use":
+        _write_overlay(out_dir / "portfolio_overlay.yaml", decision)
+        _write_json(out_dir / "position_scale.json", _paper_sim_payload(decision))
     return decision
 
 
@@ -123,22 +149,31 @@ def _standard_frames(result: StudyResult, prices: pd.DataFrame) -> dict[str, pd.
     exposure_rows = []
     previous_nav = nav.shift(1)
     held = result.weights.shift(1)
-    held_scale = result.position["position_scale"].shift(1)
-    for stamp, weight_row in held.iterrows():
-        if weight_row.isna().any():
-            continue
+    trades = result.realized[[f"trade:{s}" for s in result.weights.columns]].copy()
+    trades.columns = result.weights.columns
+    before = result.weights - trades
+    equity_columns = [
+        symbol
+        for symbol in result.weights.columns
+        if symbol not in FUTURES_COLUMNS | {"CASH", "MARGIN"}
+    ]
+    for stamp, weight_row in before.iloc[1:].iterrows():
         day = _day(stamp)
         nav_value = float(nav.loc[stamp])
         for symbol, weight in weight_row.items():
             weight_value = float(weight)
-            price = 1.0 if symbol == "CASH" else float(prices.loc[stamp, symbol])
             market_value = weight_value * nav_value
+            quantity = (
+                market_value / _valuation_price(prices, stamp, symbol)
+                if abs(weight_value) > 1e-12
+                else 0.0
+            )
             position_rows.append(
                 {
                     "date": day,
                     "strategy": STRATEGY,
                     "symbol": symbol,
-                    "quantity": market_value / price,
+                    "quantity": quantity,
                     "market_value": market_value,
                     "weight": weight_value,
                     "side": "long"
@@ -146,6 +181,7 @@ def _standard_frames(result: StudyResult, prices: pd.DataFrame) -> dict[str, pd.
                     else "short"
                     if weight_value < -1e-12
                     else "flat",
+                    "return_weight": float(held.loc[stamp, symbol]),
                 }
             )
             exposure_rows.append(
@@ -163,7 +199,7 @@ def _standard_frames(result: StudyResult, prices: pd.DataFrame) -> dict[str, pd.
                 "strategy": STRATEGY,
                 "exposure_type": "gross",
                 "name": "equity",
-                "value": float(held_scale.loc[stamp]),
+                "value": float(weight_row[equity_columns].abs().sum()),
             }
         )
         realized = result.realized.loc[stamp]
@@ -178,7 +214,9 @@ def _standard_frames(result: StudyResult, prices: pd.DataFrame) -> dict[str, pd.
                     "benchmark_return": float(realized["benchmark_return"]),
                 }
             )
-        start_nav = float(previous_nav.loc[stamp]) if pd.notna(previous_nav.loc[stamp]) else nav_value
+        start_nav = (
+            float(previous_nav.loc[stamp]) if pd.notna(previous_nav.loc[stamp]) else nav_value
+        )
         fraction = 0.0 if pd.isna(realized["cost"]) else float(realized["cost"])
         money = fraction * start_nav
         cost_rows.append(
@@ -195,13 +233,13 @@ def _standard_frames(result: StudyResult, prices: pd.DataFrame) -> dict[str, pd.
         )
     for loc in range(1, len(result.weights)):
         stamp = result.weights.index[loc]
-        delta = result.weights.iloc[loc] - result.weights.iloc[loc - 1]
+        delta = trades.loc[stamp]
         nav_value = float(nav.loc[stamp])
         for symbol, change in delta.items():
             change_value = float(change)
             if abs(change_value) <= 1e-12:
                 continue
-            price = 1.0 if symbol == "CASH" else float(prices.loc[stamp, symbol])
+            price = _valuation_price(prices, stamp, symbol)
             order_rows.append(
                 {
                     "timestamp": _day(stamp),
@@ -221,6 +259,18 @@ def _standard_frames(result: StudyResult, prices: pd.DataFrame) -> dict[str, pd.
         "costs": pd.DataFrame(cost_rows),
         "exposures": pd.DataFrame(exposure_rows),
     }
+
+
+def _valuation_price(prices: pd.DataFrame, stamp: object, symbol: str) -> float:
+    # CASH and MARGIN are denominated in account currency, not traded price indices.
+    if symbol in {"CASH", "MARGIN"}:
+        return 1.0
+    if symbol not in prices.columns:
+        raise ValueError(f"missing valuation price for {symbol}")
+    price = float(prices.loc[stamp, symbol])
+    if not math.isfinite(price) or price <= 0:
+        raise ValueError(f"invalid valuation price for {symbol} at {stamp}")
+    return price
 
 
 def _prices_sha256(prices: pd.DataFrame) -> str:
