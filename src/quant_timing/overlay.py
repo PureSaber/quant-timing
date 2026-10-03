@@ -109,7 +109,7 @@ def _available(index: pd.Index, available: pd.DataFrame | None) -> pd.DataFrame:
     if available is None:
         return pd.DataFrame(True, index=index, columns=columns)
     aligned = available.reindex(index=index, columns=columns)
-    return aligned.fillna(False).astype(bool)
+    return aligned.astype("boolean").fillna(False).astype(bool)
 
 
 def _contract_exposure(

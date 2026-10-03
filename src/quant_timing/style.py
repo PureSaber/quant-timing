@@ -108,18 +108,21 @@ def _group_weights(
             raise ValueError(f"style group {group['name']} needs an amount panel")
         amount_window = int(group.get("amount_window", 60))
         trailing = amounts.reindex(index=prices.index, columns=members).rolling(amount_window).sum()
-        benchmark = trailing.div(trailing.sum(axis=1).replace(0, pd.NA), axis=0) * group_weight
+        activity = trailing.sum(axis=1)
+        benchmark = trailing.div(activity.where(activity.ne(0)), axis=0) * group_weight
         if cap is not None:
             raw = _cap_to_benchmark(raw, benchmark, float(cap), group_weight)
         else:
             raw = raw.clip(lower=0.0)
-            total = raw.sum(axis=1).replace(0, pd.NA)
+            total = raw.sum(axis=1)
+            total = total.where(total.ne(0))
             raw = raw.div(total, axis=0) * group_weight
         return ready, {member: raw[member] for member in members}
     if cap is not None:
         raw = raw.clip(lower=base - float(cap), upper=base + float(cap))
     raw = raw.clip(lower=0.0)
-    total = raw.sum(axis=1).replace(0, pd.NA)
+    total = raw.sum(axis=1)
+    total = total.where(total.ne(0))
     raw = raw.div(total, axis=0) * group_weight
     return ready, {member: raw[member] for member in members}
 
