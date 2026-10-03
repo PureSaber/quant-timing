@@ -49,7 +49,9 @@ def exit_code(summary: dict[str, Any], decision: dict[str, Any]) -> int:
     return 0
 
 
-def write_run(result: StudyResult, prices: pd.DataFrame, out_dir: Path) -> dict[str, Any]:
+def write_run(
+    result: StudyResult, prices: pd.DataFrame, out_dir: Path, *, input_context: dict | None = None
+) -> dict[str, Any]:
     """Validate a complete staged run, then publish it with one directory rename."""
     out_dir = Path(out_dir)
     _require_empty_destination(out_dir)
@@ -57,6 +59,8 @@ def write_run(result: StudyResult, prices: pd.DataFrame, out_dir: Path) -> dict[
     with TemporaryDirectory(prefix=f".{out_dir.name}-", dir=out_dir.parent) as directory:
         staged = Path(directory)
         decision = _write_staged_run(result, prices, staged)
+        if input_context is not None:
+            _write_json(staged / "run_context.json", input_context)
         _require_empty_destination(out_dir)
         if out_dir.exists():
             out_dir.rmdir()  # Removes only an empty destination; never existing run contents.

@@ -9,7 +9,9 @@ import yaml
 
 def load_yaml(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as handle:
-        payload = yaml.safe_load(handle) or {}
+        payload = yaml.safe_load(handle)
+    if payload is None:
+        payload = {}
     if not isinstance(payload, dict):
         raise ValueError(f"config must be a mapping: {path}")
     return payload
@@ -49,6 +51,9 @@ def resolve_config(raw: dict[str, Any]) -> dict[str, Any]:
     """Validate an explicit timing config. Missing policy is rejected, not defaulted into a signal."""
     if not isinstance(raw, dict):
         raise ValueError("config must be a mapping")
+    for name in ("input", "signals", "activity", "futures"):
+        if raw.get(name) is not None and not isinstance(raw[name], dict):
+            raise ValueError(f"{name} must be a mapping")
     market = raw.get("market")
     if not isinstance(market, str) or not market or market == "CASH":
         raise ValueError("market must be a non-empty sleeve name other than CASH")
