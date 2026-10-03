@@ -49,6 +49,14 @@ def test_run_writes_a_paper_sim_scale_and_an_immutable_contract(tmp_path) -> Non
     manifest = validate_standard_run(tmp_path / "run")
     assert manifest.project == "quant-timing"
     assert manifest.tags["orders"] == "research_target_not_routed"
+    metrics = json.loads((tmp_path / "run/standard/metrics.json").read_text(encoding="utf-8"))
+    strategy, benchmark = metrics["backtest_stats"]
+    assert strategy["total_return"] == result.summary["descriptive_full_sample_net"]
+    assert benchmark["total_return"] == result.summary["descriptive_full_sample_benchmark"]
+    assert all(strategy[key] is None for key in ("ann_return", "sharpe", "max_drawdown"))
+    assert "非样本外验收" in strategy["portfolio"]
+    assert metrics["mean_excess_return"] == result.summary["mean_excess_return"]
+    assert metrics["measurement_basis"]["acceptance"] == "walk_forward_folds"
     for name, columns in ARTIFACT_SCHEMAS.items():
         header = pd.read_csv(tmp_path / "run" / "standard" / f"{name}.csv", nrows=0).columns
         assert tuple(header[: len(columns)]) == columns

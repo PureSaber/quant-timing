@@ -137,6 +137,28 @@ def _metrics(result: StudyResult, decision: dict[str, Any]) -> dict[str, Any]:
     payload = dict(result.summary)
     payload["export_action"] = decision["action"]
     payload["export_position_scale"] = decision["position_scale"]
+    sample = result.realized.dropna(subset=["net_return"])
+    payload["measurement_basis"] = {
+        "period_start": _day(sample.index[0]) if not sample.empty else None,
+        "period_end": _day(sample.index[-1]) if not sample.empty else None,
+        "sample": "descriptive_full_sample_not_walk_forward_acceptance",
+        "return_basis": "描述性全区间收益；样本外验收以独立测试折为准",
+        "acceptance": result.summary["acceptance"],
+        "source": result.raw_config.get("source"),
+    }
+    payload["backtest_stats"] = [
+        {
+            "portfolio": label,
+            "total_return": result.summary[key],
+            "ann_return": None,
+            "sharpe": None,
+            "max_drawdown": None,
+        }
+        for label, key in (
+            ("策略：描述性全区间（非样本外验收指标）", "descriptive_full_sample_net"),
+            ("基准：描述性全区间（非样本外验收指标）", "descriptive_full_sample_benchmark"),
+        )
+    ]
     return payload
 
 
