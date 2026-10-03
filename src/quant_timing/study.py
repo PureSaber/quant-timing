@@ -55,7 +55,20 @@ def run_study(
     audit: bool = True,
 ) -> StudyResult:
     config = resolve_config(raw_config)
-    _require_columns(prices, config)
+    validate_study_inputs(
+        prices,
+        config,
+        regime_history=regime_history,
+        regime_snapshot=regime_snapshot,
+        macro=macro,
+        signal_panel=signal_panel,
+        macro_history=macro_history,
+        cash_yield=cash_yield,
+        futures_price=futures_price,
+        futures_prices=futures_prices,
+        amounts=amounts,
+        peg=peg,
+    )
     external, snapshot = _external_scales(config, regime_history, regime_snapshot)
     context = normalize_macro(macro)
     position = build_position(prices[config["market"]], config["position"], external)
@@ -175,13 +188,52 @@ def run_study(
     )
 
 
-def _require_columns(prices: pd.DataFrame, config: dict[str, Any]) -> None:
+def validate_study_inputs(
+    prices: pd.DataFrame,
+    config: dict[str, Any],
+    *,
+    regime_history=None,
+    regime_snapshot=None,
+    macro=None,
+    signal_panel=None,
+    macro_history=None,
+    cash_yield=None,
+    futures_price=None,
+    futures_prices=None,
+    amounts=None,
+    peg=None,
+) -> None:
+    """Check static research requirements without producing decisions or positions."""
+    if prices.empty:
+        raise ValueError("price panel is empty")
     required = {config["market"]}
     if config["style"]:
         required.update(style_sleeves(config["style"]))
     missing = required - set(prices.columns)
     if missing:
         raise ValueError(f"price panel is missing {sorted(missing)}")
+    _external_scales(config, regime_history, regime_snapshot)
+    normalize_macro(macro)
+    if config["valuation"] is not None and peg is None:
+        raise ValueError("valuation peg series was not loaded")
+    if config["cash"]["mode"] != "zero" and cash_yield is None:
+        raise ValueError("cash yield series was not loaded")
+    if config["overlay"]["mode"] == "futures":
+        _futures_frame(futures_prices, futures_price, prices.index, config["overlay"]["contracts"])
+    if config["style"]:
+        for pair in config["style"]["pairs"]:
+            if pair["signal"] != "momentum":
+                column = str(pair["signal_column"])
+                if signal_panel is None or column not in signal_panel:
+                    raise ValueError(f"style signal column {column} is missing")
+        for group in config["style"]["groups"]:
+            if group["signal"] != "momentum":
+                for member in group["members"]:
+                    column = f"{group['name']}.{member}"
+                    if signal_panel is None or column not in signal_panel:
+                        raise ValueError(f"style signal column {column} is missing")
+            if group["benchmark"] == "amount_share" and amounts is None:
+                raise ValueError(f"style group {group['name']} needs an amount panel")
 
 
 def _external_scales(

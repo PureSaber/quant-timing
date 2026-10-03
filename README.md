@@ -29,6 +29,27 @@ python -m ruff check src tests
 
 `configs/position_only.yaml` 只做仓位择时，股票预算全部留在市场袖套。
 
+已有研究配置可以先做原生只读预检：
+
+```powershell
+python -m quant_timing preflight --config configs/combined.yaml
+```
+
+预检与`run`共用来源解析、读取与静态业务校验，检查主市场/风格列、所需信号、现金或期货列、
+外部仓位和宏观输入，以及是否存在带后续收益日期的滚动窗口。输出JSON包含原配置、配置摘要、
+实际读取文件的SHA-256与修改时间、观察区间和结构性折数。预检不生成信号、权重、模拟账本、
+泄漏审计或可发布仓位，也不写文件；动态覆盖、有效计分与最新仓位发布仍在完整研究中判断。
+
+来源可显式声明`source.evidence_kind`为`synthetic`、`retrospective`或`user_provided`；缺省为
+`unspecified`，不根据旧`source.mode`或文件名猜测。来源声明不是市场认证。
+相对路径保持原有配置目录/其父目录的解析顺序，预检和执行都固定到实际找到的同一文件。
+`run`重新读取并核对输入，在读取或研究期间变化时拒绝发布；输出目录不得包含来源文件。
+新的`run_context.json`随整套产物原子发布，记录本次输入身份，不改动既有标准CSV口径。
+
+结构性预检通过不保证最新仓位能发布。历史不足或最新仍处于预热时，运行保留阻断原因与标准
+研究产物，不导出`position_scale.json`；宏观策略要求`hold_previous`时同样不发布新仓位。
+全样本曲线仍只作描述，滚动测试折与因果审计单独判断，不据此声称正超额收益。
+
 ## 输出
 
 | 文件 | 用途 |
