@@ -1,5 +1,7 @@
 # quant-timing
 
+统一实验对比通过`standard/metrics.json`的`backtest_stats`展示策略与基准的描述性全区间收益，并明确标注其不属于样本外验收指标。样本外结论继续使用测试折、`mean_excess_return`和`mean_matched_excess_return`；没有原始同口径指标的年化收益、Sharpe和回撤保持为空。`measurement_basis`记录实际区间和收益用途，不把全样本收益替换成独立前向证据。
+
 指数与风格组合的研究层。它做两件事：
 
 - 仓位择时：用已经走完的波动和窗口收益决定股票预算，其余放在现金。
