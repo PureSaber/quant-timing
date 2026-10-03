@@ -50,6 +50,11 @@ python -m quant_timing preflight --config configs/combined.yaml
 研究产物，不导出`position_scale.json`；宏观策略要求`hold_previous`时同样不发布新仓位。
 全样本曲线仍只作描述，滚动测试折与因果审计单独判断，不据此声称正超额收益。
 
+`preflight`和`run`都接受可选`--overrides`文件，目前只允许`cost_multiplier`（0至10，默认1），
+同时缩放原`costs.bps`和`costs.impact_coef`，不修改原文件、资本、模型或窗口。覆盖文件也记录
+输入指纹。新产物把滚动折、其CSV哈希、因果审计、仓位发布决定和CLI输入上下文纳入已被
+清单哈希保护的`standard/metrics.json`，供Studio在独立上游环境核验展示；旧产物不会补写。
+
 ## 输出
 
 | 文件 | 用途 |

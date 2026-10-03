@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import deepcopy
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -85,11 +87,15 @@ class ResearchInputs:
         return report
 
 
-def prepare_inputs(config_path: Path) -> ResearchInputs:
+def prepare_inputs(config_path: Path, overrides_path: Path | None = None) -> ResearchInputs:
     config_path = config_path.resolve()
     sources = {"config": config_path}
+    if overrides_path is not None:
+        sources["overrides"] = overrides_path.resolve()
     identities = identify_sources(sources)
     raw = load_yaml(config_path)
+    if overrides_path is not None:
+        raw = apply_overrides(raw, load_yaml(overrides_path))
     config = resolve_config(raw)
     source = raw.get("source", {})
     if not isinstance(source, dict):
@@ -110,3 +116,22 @@ def prepare_inputs(config_path: Path) -> ResearchInputs:
     prepared = ResearchInputs(raw, config, prices, extras, sources, identities, kind)
     prepared.verify()
     return prepared
+
+
+def apply_overrides(raw: dict, overrides: dict) -> dict:
+    if set(overrides) - {"cost_multiplier"}:
+        raise ValueError("only cost_multiplier may be overridden")
+    factor = overrides.get("cost_multiplier", 1)
+    if (
+        isinstance(factor, bool)
+        or not isinstance(factor, (int, float))
+        or not math.isfinite(factor)
+        or not 0 <= factor <= 10
+    ):
+        raise ValueError("cost_multiplier must be finite and between 0 and 10")
+    resolve_config(raw)
+    result = deepcopy(raw)
+    for name in ("bps", "impact_coef"):
+        if name in result["costs"]:
+            result["costs"][name] *= factor
+    return result
