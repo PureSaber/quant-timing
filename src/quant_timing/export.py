@@ -51,7 +51,12 @@ def exit_code(summary: dict[str, Any], decision: dict[str, Any]) -> int:
 
 
 def write_run(
-    result: StudyResult, prices: pd.DataFrame, out_dir: Path, *, input_context: dict | None = None
+    result: StudyResult,
+    prices: pd.DataFrame,
+    out_dir: Path,
+    *,
+    input_context: dict | None = None,
+    allow_position_publication: bool = True,
 ) -> dict[str, Any]:
     """Validate a complete staged run, then publish it with one directory rename."""
     out_dir = Path(out_dir)
@@ -59,7 +64,13 @@ def write_run(
     out_dir.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix=f".{out_dir.name}-", dir=out_dir.parent) as directory:
         staged = Path(directory)
-        decision = _write_staged_run(result, prices, staged, input_context=input_context)
+        decision = _write_staged_run(
+            result,
+            prices,
+            staged,
+            input_context=input_context,
+            allow_position_publication=allow_position_publication,
+        )
         if input_context is not None:
             _write_json(staged / "run_context.json", input_context)
         _require_empty_destination(out_dir)
@@ -75,9 +86,19 @@ def _require_empty_destination(path: Path) -> None:
 
 
 def _write_staged_run(
-    result: StudyResult, prices: pd.DataFrame, out_dir: Path, *, input_context: dict | None = None
+    result: StudyResult,
+    prices: pd.DataFrame,
+    out_dir: Path,
+    *,
+    input_context: dict | None = None,
+    allow_position_publication: bool = True,
 ) -> dict[str, Any]:
     decision = gate_decision(result.latest, result.summary)
+    if not allow_position_publication:
+        decision["action"] = "blocked"
+        decision["position_scale"] = None
+        decision["signals"]["publication_policy"] = "research_comparison_only"
+        decision["signals"].setdefault("block_reason", "research_comparison_only")
     out_dir.mkdir(parents=True, exist_ok=True)
     validation = out_dir / "validation"
     validation.mkdir(exist_ok=True)
