@@ -11,7 +11,7 @@ import pandas as pd
 import yaml
 
 from quant_timing import __version__
-from quant_timing.contract import validate_standard_run, write_standard_run
+from quant_timing.contract import file_sha256, validate_standard_run, write_standard_run
 from quant_timing.overlay import FUTURES_COLUMNS
 from quant_timing.study import StudyResult
 
@@ -58,7 +58,7 @@ def write_run(
     out_dir.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix=f".{out_dir.name}-", dir=out_dir.parent) as directory:
         staged = Path(directory)
-        decision = _write_staged_run(result, prices, staged)
+        decision = _write_staged_run(result, prices, staged, input_context=input_context)
         if input_context is not None:
             _write_json(staged / "run_context.json", input_context)
         _require_empty_destination(out_dir)
@@ -73,7 +73,9 @@ def _require_empty_destination(path: Path) -> None:
         raise FileExistsError(f"refusing to overwrite a nonempty run destination: {path}")
 
 
-def _write_staged_run(result: StudyResult, prices: pd.DataFrame, out_dir: Path) -> dict[str, Any]:
+def _write_staged_run(
+    result: StudyResult, prices: pd.DataFrame, out_dir: Path, *, input_context: dict | None = None
+) -> dict[str, Any]:
     decision = gate_decision(result.latest, result.summary)
     out_dir.mkdir(parents=True, exist_ok=True)
     validation = out_dir / "validation"
@@ -84,6 +86,9 @@ def _write_staged_run(result: StudyResult, prices: pd.DataFrame, out_dir: Path) 
     _write_frame(out_dir / "position_history.csv", result.position)
     _write_frame(out_dir / "style_weights.csv", result.weights)
     metrics = _metrics(result, decision)
+    metrics["fold_metrics_sha256"] = file_sha256(validation / "fold_metrics.csv")
+    if input_context is not None:
+        metrics["input_context"] = input_context
     write_standard_run(
         out_dir,
         project="quant-timing",
@@ -141,6 +146,13 @@ def _metrics(result: StudyResult, decision: dict[str, Any]) -> dict[str, Any]:
     payload = dict(result.summary)
     payload["export_action"] = decision["action"]
     payload["export_position_scale"] = decision["position_scale"]
+    payload["research_view_schema"] = "quant-timing.research-view/v1"
+    payload["publication"] = decision
+    payload["leakage_audit"] = result.leakage
+    payload["walk_forward_folds"] = [
+        {key: None if pd.isna(value) else value for key, value in row.items()}
+        for row in result.folds.to_dict(orient="records")
+    ]
     sample = result.realized.dropna(subset=["net_return"])
     payload["measurement_basis"] = {
         "period_start": _day(sample.index[0]) if not sample.empty else None,

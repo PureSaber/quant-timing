@@ -308,3 +308,49 @@ def test_context_write_failure_does_not_publish_scale(config_file, monkeypatch):
     output = config_file.parent / "failed-export"
     assert cli.main(["run", "--config", str(config_file), "--out", str(output)]) == 2
     assert not output.exists()
+
+
+@pytest.mark.parametrize("factor", [0, 1, 2, 10])
+def test_cost_override_preserves_recipe_and_source_identity(config_file, factor):
+    raw = yaml.safe_load(config_file.read_text())
+    raw["costs"]["impact_coef"] = 0.2
+    save_config(config_file, raw)
+    original = config_file.read_bytes()
+    override = config_file.parent / "override.json"
+    override.write_text(json.dumps({"cost_multiplier": factor}))
+    prepared = prepare_inputs(config_file, override)
+    assert prepared.raw["costs"] == {"bps": 10 * factor, "impact_coef": 0.2 * factor}
+    assert prepared.raw["position"] == raw["position"]
+    assert prepared.raw["validation"] == raw["validation"]
+    assert prepared.sources["overrides"] == override
+    assert config_file.read_bytes() == original
+    prepared.verify()
+
+
+@pytest.mark.parametrize("value", [-1, 11, True, "2", float("nan"), float("inf")])
+def test_cost_override_rejects_invalid_values(config_file, value):
+    override = config_file.parent / "override.json"
+    override.write_text(json.dumps({"cost_multiplier": value}))
+    with pytest.raises(ValueError, match="cost_multiplier"):
+        prepare_inputs(config_file, override)
+
+
+def test_hashed_metrics_cover_folds_context_and_publication(config_file):
+    output = config_file.parent / "protected"
+    assert cli.main(["run", "--config", str(config_file), "--out", str(output)]) == 0
+    validate_standard_run(output)
+    metrics = json.loads((output / "standard/metrics.json").read_text(encoding="utf-8"))
+    assert metrics["publication"] == json.loads(
+        (output / "decision.json").read_text(encoding="utf-8")
+    )
+    assert metrics["input_context"] == json.loads(
+        (output / "run_context.json").read_text(encoding="utf-8")
+    )
+    assert metrics["fold_metrics_sha256"] == preflight.file_sha256(
+        output / "validation/fold_metrics.csv"
+    )
+    assert len(metrics["walk_forward_folds"]) == metrics["fold_count"]
+    metrics["publication"]["position_scale"] = 0.12345
+    (output / "standard/metrics.json").write_text(json.dumps(metrics), encoding="utf-8")
+    with pytest.raises(ValueError, match="mutated"):
+        validate_standard_run(output)

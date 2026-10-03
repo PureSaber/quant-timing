@@ -20,9 +20,11 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     preflight = sub.add_parser("preflight", help="只读检查配置、来源与滚动窗口，不运行研究")
     preflight.add_argument("--config", required=True, help="已有YAML研究配置")
+    preflight.add_argument("--overrides", type=Path, help="独立成本系数配置，不修改原研究文件")
     run = sub.add_parser("run", help="跑一条可复现的择时研究")
     run.add_argument("--config", required=True, help="YAML 配置")
     run.add_argument("--out", required=True, help="输出目录")
+    run.add_argument("--overrides", type=Path, help="独立成本系数配置，不修改原研究文件")
     compare = sub.add_parser("compare", help="在同一套费用和走步折下对照仓位模型")
     compare.add_argument("--config", required=True)
     compare.add_argument("--out", required=True)
@@ -31,17 +33,17 @@ def main(argv: list[str] | None = None) -> int:
         return compare_command(Path(args.config), Path(args.out))
     try:
         if args.command == "preflight":
-            payload = prepare_inputs(Path(args.config)).preflight()
+            payload = prepare_inputs(Path(args.config), args.overrides).preflight()
             print(json.dumps(payload, ensure_ascii=False, allow_nan=False))
             return 0
-        return run_command(Path(args.config), Path(args.out))
+        return run_command(Path(args.config), Path(args.out), args.overrides)
     except (ValueError, OSError, yaml.YAMLError) as exc:
         print(f"Timing input or research error: {exc}", file=sys.stderr)
         return 2
 
 
-def run_command(config_path: Path, out_dir: Path) -> int:
-    prepared = prepare_inputs(config_path)
+def run_command(config_path: Path, out_dir: Path, overrides_path: Path | None = None) -> int:
+    prepared = prepare_inputs(config_path, overrides_path)
     destination = out_dir.resolve()
     if any(
         path == destination or destination in path.parents for path in prepared.sources.values()
