@@ -11,6 +11,7 @@ import pandas as pd
 import yaml
 
 from quant_timing import __version__
+from quant_timing.attribution import SCHEMA as ATTRIBUTION_SCHEMA, write_attribution
 from quant_timing.contract import file_sha256, validate_standard_run, write_standard_run
 from quant_timing.overlay import FUTURES_COLUMNS
 from quant_timing.study import StudyResult
@@ -87,6 +88,8 @@ def _write_staged_run(
     _write_frame(out_dir / "style_weights.csv", result.weights)
     metrics = _metrics(result, decision)
     metrics["fold_metrics_sha256"] = file_sha256(validation / "fold_metrics.csv")
+    frames = _standard_frames(result, result.valuation_prices)
+    metrics["return_attribution"] = write_attribution(result, out_dir, frames["returns"])
     if input_context is not None:
         metrics["input_context"] = input_context
     write_standard_run(
@@ -94,7 +97,7 @@ def _write_staged_run(
         project="quant-timing",
         run_id=str(result.config["run_id"]),
         strategy="position_and_style" if result.config["style"] else "position_only",
-        frames=_standard_frames(result, result.valuation_prices),
+        frames=frames,
         metrics=metrics,
         config=result.raw_config,
         code_version=__version__,
@@ -110,6 +113,9 @@ def _write_staged_run(
             "position_return_weight": "previous_decision_weight_for_return_attribution",
             "cost_unit": "currency",
             "futures_market_value": "signed_notional_excluded_from_funded_nav",
+            "return_attribution": ATTRIBUTION_SCHEMA,
+            "slippage_semantics": "configured_bps_proxy_not_observed_execution_slippage",
+            "market_impact_semantics": "configured_nonlinear_model",
         },
     )
     validate_standard_run(out_dir)
@@ -250,6 +256,18 @@ def _standard_frames(result: StudyResult, prices: pd.DataFrame) -> dict[str, pd.
                     "net_return": float(realized["net_return"]),
                     "nav": nav_value,
                     "benchmark_return": float(realized["benchmark_return"]),
+                    "decision_date": _day(realized["decision_date"]),
+                    **{
+                        key: float(realized[key])
+                        for key in (
+                            "base_cost",
+                            "impact_cost",
+                            "matched_gross_return",
+                            "matched_net_return",
+                            "matched_base_cost",
+                            "matched_impact_cost",
+                        )
+                    },
                 }
             )
         start_nav = (
@@ -263,8 +281,8 @@ def _standard_frames(result: StudyResult, prices: pd.DataFrame) -> dict[str, pd.
                 "strategy": STRATEGY,
                 "symbol": "BOOK",
                 "commission": 0.0,
-                "slippage": money,
-                "market_impact": 0.0,
+                "slippage": float(realized["base_cost"]) * start_nav,
+                "market_impact": float(realized["impact_cost"]) * start_nav,
                 "borrow_cost": 0.0,
                 "total_cost": money,
             }

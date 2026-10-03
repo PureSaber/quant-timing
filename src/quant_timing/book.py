@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 
@@ -55,6 +57,19 @@ def assemble_weights(
 FUTURES_COLUMNS = {"FUTURES", "IF", "IC", "IM"}
 
 
+@dataclass
+class _PathResult:
+    gross: pd.Series
+    net: pd.Series
+    cost: pd.Series
+    base_cost: pd.Series
+    impact_cost: pd.Series
+    turnover: pd.Series
+    trades: pd.DataFrame
+    contributions: pd.DataFrame
+    asset_returns: pd.DataFrame
+
+
 def _assert_book(weights: pd.DataFrame) -> None:
     funded = [column for column in weights.columns if column not in _FUTURES_COLUMNS]
     totals = weights[funded].sum(axis=1)
@@ -89,29 +104,40 @@ def simulate(
         asset[name] = series.reindex(asset.index)
     if "MARGIN" in weights.columns:
         asset["MARGIN"] = 0.0
-    gross, net, cost, turnover, trades = _path(weights, asset, cost_bps, impact_coef, adv, capital)
-    matched_gross, matched_net, matched_cost, matched_turnover, _ = _path(
-        matched, asset, cost_bps, impact_coef, adv, capital
-    )
+    path = _path(weights, asset, cost_bps, impact_coef, adv, capital)
+    control = _path(matched, asset, cost_bps, impact_coef, adv, capital)
     frame = pd.DataFrame(
         {
             "decision_date": pd.Series(weights.index, index=weights.index).shift(1),
-            "gross_return": gross,
-            "net_return": net,
-            "cost": cost,
-            "turnover": turnover,
+            "gross_return": path.gross,
+            "net_return": path.net,
+            "cost": path.cost,
+            "turnover": path.turnover,
             "benchmark_return": prices[market].pct_change(),
-            "matched_gross_return": matched_gross,
-            "matched_net_return": matched_net,
-            "matched_cost": matched_cost,
-            "matched_turnover": matched_turnover,
+            "matched_gross_return": control.gross,
+            "matched_net_return": control.net,
+            "matched_cost": control.cost,
+            "matched_turnover": control.turnover,
+            "base_cost": path.base_cost,
+            "impact_cost": path.impact_cost,
+            "matched_base_cost": control.base_cost,
+            "matched_impact_cost": control.impact_cost,
         },
         index=weights.index,
     )
     frame.index = frame.index.rename("date")
     frame["nav"] = _nav(frame["net_return"])
     # Decision-date deltas are also the source for research order exports.
-    return pd.concat([frame, trades.rename_axis("date").add_prefix("trade:")], axis=1)
+    return pd.concat(
+        [
+            frame,
+            path.trades.rename_axis("date").add_prefix("trade:"),
+            path.contributions.rename_axis("date").add_prefix("contribution:"),
+            control.contributions.rename_axis("date").add_prefix("matched_contribution:"),
+            path.asset_returns.rename_axis("date").add_prefix("asset_return:"),
+        ],
+        axis=1,
+    )
 
 
 def _path(
@@ -121,7 +147,7 @@ def _path(
     impact_coef: float = 0.0,
     adv: pd.Series | None = None,
     capital: float | None = None,
-) -> tuple[pd.Series, pd.Series, pd.Series, pd.Series, pd.DataFrame]:
+) -> _PathResult:
     columns = list(weights.columns)
     returns = asset.reindex(columns=columns)
     if "CASH" in returns.columns:
@@ -142,6 +168,8 @@ def _path(
     trades = np.zeros_like(targets)
     turnover = np.full(len(weights), np.nan)
     cost = np.full(len(weights), np.nan)
+    base_cost = np.full(len(weights), np.nan)
+    impact_cost = np.full(len(weights), np.nan)
     unit_impact = (
         _impact(pd.Series(1.0, index=weights.index), float(impact_coef), adv, capital).to_numpy(
             dtype=float, na_value=np.nan
@@ -154,8 +182,11 @@ def _path(
     for loc in range(1, len(weights)):
         turnover[loc] = np.abs(trades[loc - 1]).sum() / 2.0
         cost[loc] = turnover[loc] * (cost_bps / 10_000.0)
+        base_cost[loc] = cost[loc]
+        impact_cost[loc] = 0.0
         if turnover[loc] > 0:
-            cost[loc] += unit_impact[loc] * turnover[loc] ** 1.5
+            impact_cost[loc] = unit_impact[loc] * turnover[loc] ** 1.5
+            cost[loc] += impact_cost[loc]
         growth = 1.0 + float(gross.iloc[loc]) - cost[loc]
         if not np.isfinite(growth) or growth <= 0:
             raise ValueError("cannot rebalance a book with non-positive or non-finite NAV")
@@ -166,12 +197,16 @@ def _path(
             before[cash_loc] += cash_flow
         trades[loc] = targets[loc] - before / growth
     cost_series = pd.Series(cost, index=weights.index)
-    return (
-        gross,
-        gross - cost_series,
-        cost_series,
-        pd.Series(turnover, index=weights.index),
-        pd.DataFrame(trades, index=weights.index, columns=columns),
+    return _PathResult(
+        gross=gross,
+        net=gross - cost_series,
+        cost=cost_series,
+        base_cost=pd.Series(base_cost, index=weights.index),
+        impact_cost=pd.Series(impact_cost, index=weights.index),
+        turnover=pd.Series(turnover, index=weights.index),
+        trades=pd.DataFrame(trades, index=weights.index, columns=columns),
+        contributions=gross_parts,
+        asset_returns=returns,
     )
 
 

@@ -66,8 +66,18 @@ python -m quant_timing preflight --config configs/combined.yaml
 | `decision.json` | 含 `use`、`hold_previous` 或 `blocked` 的完整决定。 |
 | `validation/` | 走步折、泄漏审计和摘要。全样本收益只作描述。 |
 | `standard/` | 与研究运行契约一致的收益、持仓、目标订单、成本和暴露。 |
+| `attribution/daily.csv` | 策略和匹配敞口对照的逐日资产、现金、保证金、期货盈亏及两项模型成本；文件哈希绑定在标准metrics中。 |
 
 持仓文件记录收盘调仓前的实际数量、金额和权重，`return_weight`用于上一笔决策的收益归因。期货和保证金使用各自的估值定义。所有产物验证成功后整体发布；导出失败不会提前发布仓位文件，非空输出目录拒绝覆盖。
+
+新运行的`standard/metrics.json.return_attribution`给出描述性全区间与每个原生测试折的可加总贡献。
+按每日的期初净资产连接贡献后，资产和现金收益、期货盈亏、基础成本及冲击成本的合计等于净收益。
+每折独立以1为归因期初，沿用既有决策日筛选及次日收益，未另行建仓；重叠折不拼接、不增加独立样本。
+匹配敞口贡献差属于账本分解，不单独证明仓位或风格的因果效应。详见[研究契约](docs/RESEARCH_CONTRACT.md)。
+
+`standard/costs.csv.slippage`在新归因契约下仅记录配置bps对应的模型基础成本；非线性冲击单列到
+`market_impact`，费用合计和原收益路径不变。这两项均不是独立成交参考价测得的真实滑点。
+旧运行不补写、不重新解释其旧成本列；新版核验器仍可读取不含归因的旧标准产物。
 
 ```mermaid
 flowchart LR
