@@ -179,10 +179,15 @@ def validate_standard_run(run_dir: Path) -> RunManifest:
         raise ValueError(f"unsupported schema {manifest.schema_version}")
     expected = {*ARTIFACT_SCHEMAS, "metrics"}
     actual = {record.name for record in manifest.artifacts}
-    if actual != expected:
+    if actual != expected or len(manifest.artifacts) != len(expected):
         raise ValueError(f"artifact set mismatch: {actual ^ expected}")
     for record in manifest.artifacts:
+        expected_path = "metrics.json" if record.name == "metrics" else f"{record.name}.csv"
+        if record.path != expected_path:
+            raise ValueError(f"artifact path must be canonical: {record.name}")
         path = standard_dir / record.path
+        if not path.resolve().is_relative_to(Path(run_dir).resolve()):
+            raise ValueError(f"artifact escaped run: {record.name}")
         if not path.is_file() or file_sha256(path) != record.sha256:
             raise ValueError(f"artifact missing or mutated: {path}")
         if record.name in ARTIFACT_SCHEMAS:
@@ -190,4 +195,11 @@ def validate_standard_run(run_dir: Path) -> RunManifest:
             required = set(ARTIFACT_SCHEMAS[record.name])
             if not required.issubset(columns):
                 raise ValueError(f"artifact schema invalid: {record.name}")
+    metrics = json.loads((standard_dir / "metrics.json").read_text(encoding="utf-8"))
+    if "return_attribution" in metrics or "return_attribution" in manifest.tags:
+        from quant_timing.attribution import SCHEMA, validate_attribution
+
+        if manifest.tags.get("return_attribution") != SCHEMA or "return_attribution" not in metrics:
+            raise ValueError("attribution manifest binding missing")
+        validate_attribution(run_dir, metrics)
     return manifest
