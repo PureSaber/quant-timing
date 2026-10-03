@@ -79,6 +79,21 @@ python -m quant_timing preflight --config configs/combined.yaml
 `market_impact`，费用合计和原收益路径不变。这两项均不是独立成交参考价测得的真实滑点。
 旧运行不补写、不重新解释其旧成本列；新版核验器仍可读取不含归因的旧标准产物。
 
+## 固定仓位与风格反事实
+
+`counterfactual`在运行任何候选前冻结协议和输入身份，分别重放原策略、取消仓位模型降档、
+取消风格信号倾斜及联合干预；无风格模块时只运行前两项。保留原预热、现金、费用及后续约束，
+不把模型档位为1解释为最终满仓，也不把风格倾斜为0.5解释为纯被动基准。
+
+```powershell
+python -m quant_timing counterfactual --config configs/combined.yaml --out outputs/paired
+python -m quant_timing verify-counterfactual --run-dir outputs/paired
+```
+
+输出原生账本、分折效应、联合交互、分量差对账和可展开HTML报告。任一必需候选失败时，
+整个候选族的效应结论不可用；所有候选均禁止发布下游仓位。协议在执行前固定，但历史结果
+可能已被观察，不能因此称为盲测或新增前向证据。详见[固定反事实协议](docs/COUNTERFACTUALS.md)。
+
 ```mermaid
 flowchart LR
   prices[指数与风格价格] --> study[quant-timing]

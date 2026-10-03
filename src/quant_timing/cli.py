@@ -28,10 +28,27 @@ def main(argv: list[str] | None = None) -> int:
     compare = sub.add_parser("compare", help="在同一套费用和走步折下对照仓位模型")
     compare.add_argument("--config", required=True)
     compare.add_argument("--out", required=True)
+    paired = sub.add_parser("counterfactual", help="按冻结候选族解释仓位与风格，不发布仓位")
+    paired.add_argument("--config", type=Path, required=True)
+    paired.add_argument("--out", type=Path, required=True)
+    verify_paired = sub.add_parser("verify-counterfactual", help="从原生产物重算并核验反事实报告")
+    verify_paired.add_argument("--run-dir", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "compare":
         return compare_command(Path(args.config), Path(args.out))
     try:
+        if args.command in {"counterfactual", "verify-counterfactual"}:
+            from quant_timing.counterfactual import run_counterfactual, validate_counterfactual
+
+            payload = (
+                run_counterfactual(args.config, args.out)
+                if args.command == "counterfactual"
+                else validate_counterfactual(args.run_dir)
+            )
+            print(
+                f"counterfactual status={payload['status']} candidates={len(payload['candidates'])}"
+            )
+            return 0 if payload["status"] == "complete" else 2
         if args.command == "preflight":
             payload = prepare_inputs(Path(args.config), args.overrides).preflight()
             print(json.dumps(payload, ensure_ascii=False, allow_nan=False))
