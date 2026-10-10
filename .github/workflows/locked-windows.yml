@@ -32,4 +32,3 @@ jobs:
           if ($LASTEXITCODE) { throw 'Lint failed' }
           & $runtime -m pytest -q
           if ($LASTEXITCODE) { throw 'Tests failed' }
-
