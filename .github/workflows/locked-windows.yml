@@ -1,0 +1,34 @@
+name: Locked Windows environment
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  locked-windows:
+    name: Locked Windows Python 3.12
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: "3.12"
+      - name: Build a fresh environment from the lock
+        shell: pwsh
+        run: |
+          ./tools/Install-Locked.ps1 -Python python -Environment .venv-locked
+      - name: Verify locked dependencies and exercise the research code
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $runtime = '.venv-locked/Scripts/python.exe'
+          & $runtime -m pip check
+          if ($LASTEXITCODE) { throw 'Dependency consistency check failed' }
+          & $runtime -m ruff check src tests
+          if ($LASTEXITCODE) { throw 'Lint failed' }
+          & $runtime -m pytest -q
+          if ($LASTEXITCODE) { throw 'Tests failed' }
